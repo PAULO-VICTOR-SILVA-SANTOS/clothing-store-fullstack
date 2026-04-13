@@ -277,7 +277,8 @@ const defaultProducts: Product[] = [
 
 const STORAGE_KEYS = {
   products: 'apd_products',
-  state: 'apd_state'
+  state: 'apd_state',
+  customers: 'apd_customers'
 }
 
 function loadProducts(): Product[] {
@@ -290,6 +291,28 @@ function loadProducts(): Product[] {
 
 function saveProducts(list: Product[]) {
   localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(list))
+}
+
+function normalizeLookup(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+function loadCustomerProfiles(): Customer[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.customers)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as Customer[]
+    return parsed.filter((c) => !!c?.nomeCompleto)
+  } catch (_) { /* ignora parse error */ }
+  return []
+}
+
+function saveCustomerProfiles(list: Customer[]) {
+  localStorage.setItem(STORAGE_KEYS.customers, JSON.stringify(list))
 }
 
 type PersistedState = {
@@ -350,6 +373,43 @@ if (appState.customer.nomeCompleto) {
 }
 
 let products = loadProducts()
+let customerProfiles = loadCustomerProfiles()
+
+function findCustomerProfileByName(name: string): Customer | null {
+  const key = normalizeLookup(name)
+  if (!key) return null
+  return customerProfiles.find((c) => normalizeLookup(c.nomeCompleto) === key) ?? null
+}
+
+function upsertCustomerProfile(customer: Customer) {
+  const key = normalizeLookup(customer.nomeCompleto)
+  if (!key) return
+
+  const next: Customer = {
+    nomeCompleto: customer.nomeCompleto.trim(),
+    nomeOficina: customer.nomeOficina.trim(),
+    enderecoCompleto: customer.enderecoCompleto.trim(),
+    email: customer.email.trim(),
+    whatsapp: customer.whatsapp.trim()
+  }
+
+  const idx = customerProfiles.findIndex((c) => normalizeLookup(c.nomeCompleto) === key)
+  if (idx >= 0) customerProfiles[idx] = next
+  else customerProfiles.push(next)
+  saveCustomerProfiles(customerProfiles)
+}
+
+function customerNameOptionsHtml() {
+  const uniqueByName = new Map<string, string>()
+  customerProfiles.forEach((c) => {
+    const key = normalizeLookup(c.nomeCompleto)
+    if (key && !uniqueByName.has(key)) uniqueByName.set(key, c.nomeCompleto.trim())
+  })
+  return Array.from(uniqueByName.values())
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+    .map((name) => `<option value="${name}"></option>`)
+    .join('')
+}
 
 const categories: Array<'todas' | Category> = [
   'todas',
@@ -366,6 +426,11 @@ const categories: Array<'todas' | Category> = [
 const currency = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
 const app = document.querySelector<HTMLDivElement>('#app')!
+const ADMIN_PIN = '1323' // troque por um PIN privado
+
+let adminSecretBound = false
+let adminLogoTapCount = 0
+let adminLogoTapResetTimer: ReturnType<typeof setTimeout> | null = null
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -407,11 +472,48 @@ function gerarNumeroPedido() {
 }
 
 function setStep(step: Step) {
+  if (step === 'admin' && !appState.isAdminAuthenticated) {
+    alert('Acesso restrito ao painel administrativo.')
+    return
+  }
   appState.prevStep = appState.step
   appState.step = step
   persistState()
   render()
   window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function requestAdminAccess() {
+  const pin = prompt('Informe o PIN do administrador:')
+  if (pin === null) return
+  if (pin.trim() !== ADMIN_PIN) {
+    alert('PIN inválido.')
+    return
+  }
+  appState.isAdminAuthenticated = true
+  setStep('admin')
+}
+
+function registerAdminLogoTap() {
+  adminLogoTapCount += 1
+
+  if (adminLogoTapResetTimer) {
+    clearTimeout(adminLogoTapResetTimer)
+  }
+
+  adminLogoTapResetTimer = setTimeout(() => {
+    adminLogoTapCount = 0
+    adminLogoTapResetTimer = null
+  }, 1200)
+
+  if (adminLogoTapCount >= 5) {
+    adminLogoTapCount = 0
+    if (adminLogoTapResetTimer) {
+      clearTimeout(adminLogoTapResetTimer)
+      adminLogoTapResetTimer = null
+    }
+    requestAdminAccess()
+  }
 }
 
 function getBackStep(current: Step): Step | null {
@@ -561,6 +663,7 @@ function stepIndicator(active: number) {
 }
 
 function cadastroScreen() {
+  const namesOptions = customerNameOptionsHtml()
   return `
     <section class="screen card fade-in">
       ${stepIndicator(1)}
@@ -570,29 +673,30 @@ function cadastroScreen() {
         <p class="lead">Preencha seus dados para acessar o catálogo e realizar pedidos.</p>
       </div>
       <form id="cadastro-form" class="form-grid" novalidate>
+        <datalist id="customer-name-suggestions">${namesOptions}</datalist>
         <label>
           Nome completo *
-          <input required name="nomeCompleto" value="${appState.customer.nomeCompleto}"
-            placeholder="Ex: João da Silva" autocomplete="name" />
+          <input required id="customer-full-name" name="nomeCompleto" value="${appState.customer.nomeCompleto}"
+            placeholder="Ex: João da Silva" autocomplete="name" list="customer-name-suggestions" />
         </label>
         <label>
           Nome da oficina *
-          <input required name="nomeOficina" value="${appState.customer.nomeOficina}"
+          <input required id="customer-workshop" name="nomeOficina" value="${appState.customer.nomeOficina}"
             placeholder="Ex: Auto Center Premium" />
         </label>
         <label class="full">
           Endereço completo *
-          <input required name="enderecoCompleto" value="${appState.customer.enderecoCompleto}"
+          <input required id="customer-address" name="enderecoCompleto" value="${appState.customer.enderecoCompleto}"
             placeholder="Rua, número, bairro, cidade – CEP" autocomplete="street-address" />
         </label>
         <label>
           E-mail *
-          <input required type="email" name="email" value="${appState.customer.email}"
+          <input required id="customer-email" type="email" name="email" value="${appState.customer.email}"
             placeholder="contato@oficina.com" autocomplete="email" />
         </label>
         <label>
           WhatsApp *
-          <input type="tel" name="whatsapp" value="${appState.customer.whatsapp}"
+          <input id="customer-whatsapp" type="tel" name="whatsapp" value="${appState.customer.whatsapp}"
             placeholder="(00) 00000-0000" autocomplete="tel"
             required maxlength="15" inputmode="numeric" pattern="^\\(\\d{2}\\) \\d{5}-\\d{4}$" />
         </label>
@@ -1088,7 +1192,6 @@ function template() {
           ${appState.customer.nomeCompleto
             ? '<button type="button" class="btn new-registration-btn" id="new-registration" title="Cadastrar novo cliente">Fazer novo cadastro</button>'
             : ''}
-          <button type="button" class="btn admin-btn" id="open-admin" title="Painel Admin">⚙</button>
         </div>
       </header>
       ${backStep ? '<button class="btn floating-back" id="floating-back" aria-label="Voltar para a página anterior">← Voltar</button>' : ''}
@@ -1106,6 +1209,18 @@ function template() {
 // ─── Bind de eventos ──────────────────────────────────────────────────────────
 
 function bindEvents() {
+  if (!adminSecretBound) {
+    document.addEventListener('keydown', (e) => {
+      const isShortcutA = e.ctrlKey && e.shiftKey && (e.key === 'A' || e.key === 'a')
+      const isShortcutB = e.ctrlKey && e.altKey && (e.key === 'A' || e.key === 'a')
+      if (isShortcutA || isShortcutB) {
+        e.preventDefault()
+        requestAdminAccess()
+      }
+    })
+    adminSecretBound = true
+  }
+
   // Ficha técnica dentro do app.
   document.querySelectorAll<HTMLButtonElement>('[data-action="open-tech"]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1136,6 +1251,7 @@ function bindEvents() {
   document.getElementById('floating-cart')?.addEventListener('click', () => setStep('carrinho'))
   document.getElementById('go-home')?.addEventListener('click', (e) => {
     e.preventDefault()
+    registerAdminLogoTap()
     if (appState.customer.nomeCompleto) setStep('catalogo')
     else setStep('cadastro')
   })
@@ -1144,10 +1260,32 @@ function bindEvents() {
       resetToNewCustomerRegistration()
     }
   })
-  document.getElementById('open-admin')?.addEventListener('click', () => setStep('admin'))
   // Cadastro
   const cadastroForm = document.getElementById('cadastro-form') as HTMLFormElement | null
+  const nameInput = cadastroForm?.querySelector<HTMLInputElement>('input[name="nomeCompleto"]')
+  const workshopInput = cadastroForm?.querySelector<HTMLInputElement>('input[name="nomeOficina"]')
+  const addressInput = cadastroForm?.querySelector<HTMLInputElement>('input[name="enderecoCompleto"]')
+  const emailInput = cadastroForm?.querySelector<HTMLInputElement>('input[name="email"]')
   const whatsappInput = cadastroForm?.querySelector<HTMLInputElement>('input[name="whatsapp"]')
+
+  const fillCustomerForm = (customer: Customer) => {
+    if (nameInput) nameInput.value = customer.nomeCompleto
+    if (workshopInput) workshopInput.value = customer.nomeOficina
+    if (addressInput) addressInput.value = customer.enderecoCompleto
+    if (emailInput) emailInput.value = customer.email
+    if (whatsappInput) whatsappInput.value = formatWhatsapp(customer.whatsapp)
+  }
+
+  const tryAutofillByName = () => {
+    if (!nameInput) return
+    const found = findCustomerProfileByName(nameInput.value)
+    if (!found) return
+    fillCustomerForm(found)
+  }
+
+  nameInput?.addEventListener('change', tryAutofillByName)
+  nameInput?.addEventListener('blur', tryAutofillByName)
+
   whatsappInput?.addEventListener('input', () => {
     whatsappInput.value = formatWhatsapp(whatsappInput.value)
   })
@@ -1172,6 +1310,7 @@ function bindEvents() {
       email: get('email'),
       whatsapp: get('whatsapp')
     }
+    upsertCustomerProfile(appState.customer)
     setStep('catalogo')
   })
 
