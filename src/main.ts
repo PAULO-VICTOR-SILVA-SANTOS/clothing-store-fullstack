@@ -1,5 +1,5 @@
 import './style.css'
-import logoLugarDasTintas from '/logo-castro-multimarcas.svg'
+import logoLugarDasTintas from '../images/LOGO CASTRO MULTIMARCAS.png'
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
 
