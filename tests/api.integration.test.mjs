@@ -1,0 +1,154 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import request from 'supertest'
+import { MongoMemoryServer } from 'mongodb-memory-server'
+import mongoose from 'mongoose'
+import { buildApp } from '../server/app.mjs'
+import { connectMongo } from '../server/db.mjs'
+import { seedProductsIfEmpty } from '../server/seed.mjs'
+
+let app
+let mongod
+/** @type {Record<string, string | undefined>} */
+const savedEnv = {}
+
+beforeAll(async () => {
+  for (const k of [
+    'MONGODB_URI',
+    'JWT_SECRET',
+    'ADMIN_PASSWORD',
+    'ADMIN_API_KEY',
+    'CLOUDINARY_URL',
+    'HELMET_DISABLE',
+    'PEDIDOS_RATE_MAX'
+  ]) {
+    savedEnv[k] = process.env[k]
+  }
+
+  mongod = await MongoMemoryServer.create()
+  process.env.MONGODB_URI = mongod.getUri()
+  process.env.JWT_SECRET = 'unit-test-jwt-secret-at-least-32-bytes'
+  process.env.ADMIN_PASSWORD = 'integration-test-password'
+  process.env.ADMIN_API_KEY = ''
+  process.env.CLOUDINARY_URL = ''
+  process.env.HELMET_DISABLE = 'true'
+  process.env.PEDIDOS_RATE_MAX = '9999'
+
+  await connectMongo(process.env.MONGODB_URI)
+  await seedProductsIfEmpty()
+  app = buildApp()
+}, 120000)
+
+afterAll(async () => {
+  await mongoose.disconnect()
+  if (mongod) await mongod.stop()
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+})
+
+describe('GET /health', () => {
+  it('retorna ok', async () => {
+    const res = await request(app).get('/health').expect(200)
+    expect(res.body).toMatchObject({ ok: true })
+  })
+})
+
+describe('POST /auth/login', () => {
+  it('rejeita senha errada', async () => {
+    await request(app).post('/auth/login').send({ password: 'wrong' }).expect(401)
+  })
+
+  it('aceita senha correta e devolve token', async () => {
+    const res = await request(app)
+      .post('/auth/login')
+      .send({ password: 'integration-test-password' })
+      .expect(200)
+    expect(res.body.token).toBeTruthy()
+    expect(typeof res.body.token).toBe('string')
+  })
+})
+
+describe('GET /produtos', () => {
+  it('retorna lista após seed', async () => {
+    const res = await request(app).get('/produtos').expect(200)
+    expect(Array.isArray(res.body)).toBe(true)
+    expect(res.body.length).toBeGreaterThan(0)
+  })
+})
+
+describe('POST /pedidos', () => {
+  it('rejeita sem itens', async () => {
+    await request(app).post('/pedidos').send({ items: [] }).expect(400)
+  })
+
+  it('rejeita id de produto inválido', async () => {
+    await request(app)
+      .post('/pedidos')
+      .send({ items: [{ productId: 'nope', qty: 1 }], total: 10 })
+      .expect(400)
+  })
+
+  it('cria pedido com produto do catálogo', async () => {
+    const listRes = await request(app).get('/produtos')
+    const first = listRes.body[0]
+    expect(first).toBeTruthy()
+    const pid = first.id
+    const preco = Number(first.preco) || 10
+    const res = await request(app)
+      .post('/pedidos')
+      .send({
+        items: [{ productId: String(pid), qty: 1 }],
+        total: preco,
+        numero: 'TEST-001',
+        customer: { nomeCompleto: 'Teste' }
+      })
+      .expect(201)
+    expect(res.body.ok).toBe(true)
+    expect(res.body.orderId).toMatch(/^[a-f0-9]{24}$/i)
+  })
+})
+
+describe('proteção de gestão (JWT)', () => {
+  it('GET /pedidos exige credencial quando só JWT_SECRET está definido', async () => {
+    const res = await request(app).get('/pedidos').expect(401)
+    expect(res.body.erro).toBeTruthy()
+  })
+
+  it('GET /pedidos aceita Bearer JWT', async () => {
+    const login = await request(app)
+      .post('/auth/login')
+      .send({ password: 'integration-test-password' })
+      .expect(200)
+    const token = login.body.token
+    const res = await request(app).get('/pedidos').set('Authorization', `Bearer ${token}`).expect(200)
+    expect(Array.isArray(res.body)).toBe(true)
+  })
+
+  it('POST /produtos exige credencial', async () => {
+    await request(app)
+      .post('/produtos')
+      .send({ nome: 'X', marca: 'm', categoria: 'Bermuda', preco: 1, uso: 'u' })
+      .expect(401)
+  })
+
+  it('POST /produtos aceita JWT e valida corpo', async () => {
+    const login = await request(app)
+      .post('/auth/login')
+      .send({ password: 'integration-test-password' })
+      .expect(200)
+    const token = login.body.token
+    await request(app).post('/produtos').set('Authorization', `Bearer ${token}`).send({}).expect(400)
+  })
+})
+
+describe('Helmet', () => {
+  it('envia Content-Security-Policy quando Helmet está ativo', async () => {
+    const prev = process.env.HELMET_DISABLE
+    delete process.env.HELMET_DISABLE
+    const appHelmet = buildApp()
+    const res = await request(appHelmet).get('/health').expect(200)
+    expect(res.headers['content-security-policy']).toBeTruthy()
+    process.env.HELMET_DISABLE = prev
+  })
+})

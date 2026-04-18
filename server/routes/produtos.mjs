@@ -1,0 +1,101 @@
+import express from 'express'
+import mongoose from 'mongoose'
+import { requireAdminWhenConfigured } from '../middleware/adminAuth.mjs'
+import { Product } from '../models/Product.mjs'
+import { sanitizeImagens, toApiProduct } from '../utils/productApi.mjs'
+
+export const produtosRouter = express.Router()
+
+produtosRouter.get('/', async (_req, res) => {
+  try {
+    const list = await Product.find().sort({ createdAt: -1 }).lean()
+    res.json(list.map((p) => toApiProduct({ ...p, _id: p._id })))
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ erro: 'Falha ao listar produtos' })
+  }
+})
+
+produtosRouter.post('/', requireAdminWhenConfigured, async (req, res) => {
+  try {
+    const b = req.body || {}
+    const imagens = sanitizeImagens(b.imagens)
+    if (!b.nome || !String(b.nome).trim()) {
+      return res.status(400).json({ erro: 'Nome é obrigatório' })
+    }
+    if (!b.categoria) {
+      return res.status(400).json({ erro: 'Categoria é obrigatória' })
+    }
+    const preco = Number(b.preco)
+    if (Number.isNaN(preco) || preco < 0) {
+      return res.status(400).json({ erro: 'Preço inválido' })
+    }
+    const estoque = Math.max(0, Math.floor(Number(b.estoque) || 0))
+    const doc = await Product.create({
+      nome: String(b.nome).trim(),
+      marca: String(b.marca ?? '—').trim(),
+      categoria: String(b.categoria).trim(),
+      subcategoria: b.subcategoria ? String(b.subcategoria).trim() : undefined,
+      preco,
+      imagens: imagens.length ? imagens : ['https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'],
+      estoque,
+      uso: String(b.uso ?? '').trim(),
+      modelo: !!b.modelo,
+      custom: !!b.custom
+    })
+    res.status(201).json(toApiProduct(doc))
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ erro: 'Falha ao criar produto' })
+  }
+})
+
+produtosRouter.patch('/:id', requireAdminWhenConfigured, async (req, res) => {
+  try {
+    const { id } = req.params
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ erro: 'ID de produto inválido' })
+    }
+    const p = await Product.findById(id)
+    if (!p) return res.status(404).json({ erro: 'Produto não encontrado' })
+    const b = req.body || {}
+    if (b.nome != null) p.nome = String(b.nome).trim()
+    if (b.marca != null) p.marca = String(b.marca).trim()
+    if (b.categoria != null) p.categoria = String(b.categoria).trim()
+    if (b.subcategoria !== undefined) p.subcategoria = b.subcategoria ? String(b.subcategoria).trim() : undefined
+    if (b.preco != null) {
+      const preco = Number(b.preco)
+      if (Number.isNaN(preco) || preco < 0) return res.status(400).json({ erro: 'Preço inválido' })
+      p.preco = preco
+    }
+    if (b.estoque != null) {
+      p.estoque = Math.max(0, Math.floor(Number(b.estoque)))
+    }
+    if (b.imagens != null) {
+      p.imagens = sanitizeImagens(b.imagens)
+    }
+    if (b.uso != null) p.uso = String(b.uso).trim()
+    if (b.modelo != null) p.modelo = !!b.modelo
+    if (b.custom != null) p.custom = !!b.custom
+    await p.save()
+    res.json(toApiProduct(p))
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ erro: 'Falha ao atualizar produto' })
+  }
+})
+
+produtosRouter.delete('/:id', requireAdminWhenConfigured, async (req, res) => {
+  try {
+    const { id } = req.params
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ erro: 'ID de produto inválido' })
+    }
+    const r = await Product.deleteOne({ _id: id })
+    if (r.deletedCount === 0) return res.status(404).json({ erro: 'Produto não encontrado' })
+    res.status(204).end()
+  } catch (e) {
+    console.error(e)
+    res.status(500).json({ erro: 'Falha ao excluir produto' })
+  }
+})

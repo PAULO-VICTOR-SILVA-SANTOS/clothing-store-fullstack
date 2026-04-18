@@ -530,6 +530,23 @@ td {
   display: grid;
   gap: 8px;
 }
+.ficha-gallery-scroll {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+.ficha-gallery-img {
+  flex: 0 0 min(220px, 70vw);
+  height: 140px;
+  width: min(220px, 70vw);
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  scroll-snap-align: start;
+}
 
 /* ─── Step Indicator ─────────────────────────────────────────────────────── */
 .steps {
@@ -624,8 +641,51 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
 .link-btn:hover { text-decoration: underline; }
 
 /* ─── Products ───────────────────────────────────────────────────────────── */
-.product-img-wrap { position: relative; height: 160px; background: var(--surface-2); overflow: hidden; }
-.product-img-wrap img { width: 100%; height: 100%; object-fit: cover; }
+.product-img-wrap {
+  position: relative;
+  height: 160px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.product-img-scroll {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+.product-carousel-slide {
+  flex: 0 0 100%;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  scroll-snap-align: start;
+}
+.product-carousel-hint {
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(17, 33, 58, 0.72);
+  color: #fff;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.stock-msg {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+.stock-msg.stock-ok { color: #0b6b45; }
+.stock-msg.stock-out { color: #cf1322; }
+.stock-msg.stock-warn { color: #ad4e00; }
 .badge-custom {
   position: absolute; top: 8px; right: 8px;
   background: #7c3aed; color: #fff;
@@ -1248,6 +1308,46 @@ fieldset legend {
   background: #fff;
 }
 
+.admin-photo-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+.admin-thumb-cell {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+.admin-thumb-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.admin-thumb-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  padding: 2px 6px !important;
+  min-height: auto !important;
+  line-height: 1;
+}
+.admin-stock-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.admin-stock-value {
+  min-width: 28px;
+  text-align: center;
+  font-weight: 800;
+}
+
 /* ─── Admin: identidade / logo da loja ───────────────────────────────────── */
 .branding-logo-block {
   grid-column: 1 / -1;
@@ -1299,6 +1399,10 @@ fieldset legend {
 }
 .store-about-card .store-about-line:first-of-type {
   margin-top: 6px;
+}
+
+.admin-pedidos-out .admin-table {
+  min-width: 520px;
 }
 
 .checkout-admin-subh {

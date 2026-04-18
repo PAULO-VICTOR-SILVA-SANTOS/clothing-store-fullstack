@@ -1,0 +1,18 @@
+[
+  {
+    "id": "api-exemplo-1",
+    "nome": "Camiseta exemplo (servidor)",
+    "marca": "Castro Multimarcas",
+    "categoria": "Camisetas e blusas",
+    "subcategoria": "GET /produtos",
+    "preco": 59.9,
+    "imagens": [
+      "https://placehold.co/400x220/e8f0fe/1a3a6b?text=API+1",
+      "https://placehold.co/400x220/fee8dc/8e3208?text=API+2"
+    ],
+    "estoque": 8,
+    "uso": "Este item veio do arquivo server/data/produtos.json. Edite o JSON ou conecte POST depois.",
+    "modelo": false,
+    "custom": false
+  }
+]

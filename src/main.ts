@@ -1,4 +1,5 @@
 import './style.css'
+import * as storeApi from './api/storeApi'
 import logoLugarDasTintas from '../images/LOGO CASTRO MULTIMARCAS.png'
 import camisa1Img from '../images/camisa 1.jpg'
 import camisa2Img from '../images/camisa 2.jpg'
@@ -8,6 +9,13 @@ import cueca2Img from '../images/cueca 2.jpg'
 import short1Img from '../images/short 1.jpg'
 import short2Img from '../images/short 2.jpg'
 import short3Img from '../images/short 3.jpg'
+
+/** Máximo de fotos por produto (admin + persistência). */
+const MAX_PRODUCT_IMAGES = 10
+/** Estoque usado quando o JSON antigo não tinha o campo `estoque`. */
+const LEGACY_DEFAULT_ESTOQUE = 999
+/** Estoque inicial das peças modelo de exemplo. */
+const SEED_MODELO_ESTOQUE = 20
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
 
@@ -40,7 +48,9 @@ type Product = {
   categoria: Category
   subcategoria?: string
   preco: number
-  imagem: string
+  /** URLs ou data URLs; frente, costas, lateral… (máx. 10). */
+  imagens: string[]
+  estoque: number
   uso: string
   custom?: boolean // adicionado pelo admin
   /** Peça de exemplo (imagens em /modelos/); pode remover no painel */
@@ -75,7 +85,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Camisetas e blusas',
       subcategoria: 'Manga curta',
       preco: 89.9,
-      imagem: camisa1Img,
+      imagens: [camisa1Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     },
@@ -86,7 +97,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Camisetas e blusas',
       subcategoria: 'Manga curta',
       preco: 89.9,
-      imagem: camisa2Img,
+      imagens: [camisa2Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     },
@@ -97,7 +109,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Camisetas e blusas',
       subcategoria: 'Manga curta',
       preco: 89.9,
-      imagem: camisa3Img,
+      imagens: [camisa3Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     },
@@ -108,7 +121,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Shorts e bermudas',
       subcategoria: 'Casual',
       preco: 69.9,
-      imagem: short1Img,
+      imagens: [short1Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     },
@@ -119,7 +133,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Shorts e bermudas',
       subcategoria: 'Casual',
       preco: 69.9,
-      imagem: short2Img,
+      imagens: [short2Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     },
@@ -130,7 +145,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Shorts e bermudas',
       subcategoria: 'Casual',
       preco: 69.9,
-      imagem: short3Img,
+      imagens: [short3Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     },
@@ -141,7 +157,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Outros',
       subcategoria: 'Moda intima',
       preco: 39.9,
-      imagem: cueca1Img,
+      imagens: [cueca1Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     },
@@ -152,7 +169,8 @@ function seedModeloProducts(): Product[] {
       categoria: 'Outros',
       subcategoria: 'Moda intima',
       preco: 39.9,
-      imagem: cueca2Img,
+      imagens: [cueca2Img],
+      estoque: SEED_MODELO_ESTOQUE,
       uso: 'Peça modelo para vitrine inicial do catálogo.',
       modelo: true
     }
@@ -467,7 +485,24 @@ function normalizeCategory(raw: unknown): Category {
 }
 
 function normalizeProduct(raw: unknown): Product {
-  const p = raw as Partial<Product> & { fonte?: string }
+  const p = raw as Partial<Product> & { imagem?: unknown }
+  let imagens: string[] = []
+  if (Array.isArray(p.imagens)) {
+    imagens = p.imagens
+      .map((x) => String(x).trim())
+      .filter(Boolean)
+      .slice(0, MAX_PRODUCT_IMAGES)
+  }
+  const legacyImg = typeof p.imagem === 'string' ? p.imagem.trim() : ''
+  if (!imagens.length && legacyImg) imagens = [legacyImg]
+
+  let estoque: number
+  if (typeof p.estoque === 'number' && !Number.isNaN(p.estoque)) {
+    estoque = Math.max(0, Math.floor(p.estoque))
+  } else {
+    estoque = LEGACY_DEFAULT_ESTOQUE
+  }
+
   return {
     id: String(p.id ?? `item-${Date.now()}`),
     nome: String(p.nome ?? 'Produto'),
@@ -475,14 +510,16 @@ function normalizeProduct(raw: unknown): Product {
     categoria: normalizeCategory(p.categoria),
     subcategoria: typeof p.subcategoria === 'string' && p.subcategoria.trim() ? p.subcategoria.trim() : undefined,
     preco: typeof p.preco === 'number' && !Number.isNaN(p.preco) ? p.preco : 0,
-    imagem: String(p.imagem ?? ''),
+    imagens,
+    estoque,
     uso: String(p.uso ?? ''),
     custom: p.custom === true,
     modelo: (p as Partial<Product>).modelo === true
   }
 }
 
-function loadProducts(): Product[] {
+/** Catálogo só do navegador (localStorage + peças modelo). */
+function loadProductsFromStorage(): Product[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.products)
     if (raw !== null) {
@@ -629,13 +666,35 @@ if (appState.customer.nomeCompleto) {
   appState.step = 'catalogo'
 }
 
-let products = loadProducts()
+let products = loadProductsFromStorage()
 if (localStorage.getItem(STORAGE_KEYS.products) === null) {
   saveProducts(products)
 }
 let customerProfiles = loadCustomerProfiles()
 
 applyDocumentBranding()
+
+/** Em `npm run dev`, tenta substituir o catálogo pelo retorno da API (servidor em paralelo). */
+async function tryReplaceProductsFromApiIfDev() {
+  const allow =
+    import.meta.env.DEV || import.meta.env.VITE_SYNC_PRODUCTS_FROM_API === 'true'
+  if (!allow) return
+  const data = await storeApi.fetchProdutos(2800)
+  if (data === null) return
+  products = data.map(normalizeProduct)
+  saveProducts(products)
+  render()
+}
+
+/** Recarrega o catálogo a partir do GET /produtos (ex.: após pedido ou alteração no admin). */
+async function refreshProductsFromApi(): Promise<boolean> {
+  const data = await storeApi.fetchProdutos(8000)
+  if (data === null) return false
+  products = data.map(normalizeProduct)
+  saveProducts(products)
+  render()
+  return true
+}
 
 function findCustomerProfileByName(name: string): Customer | null {
   const key = normalizeLookup(name)
@@ -691,11 +750,51 @@ const categories: Array<'todas' | Category> = ['todas', ...CATEGORY_VALUES]
 
 const currency = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
+function shouldTryServerUpload(): boolean {
+  return import.meta.env.DEV || import.meta.env.VITE_SYNC_PRODUCTS_FROM_API === 'true'
+}
+
+/** Tabela HTML dos pedidos retornados por GET /pedidos. */
+function adminPedidosTableHtml(list: unknown[]): string {
+  const rows = list
+    .map((raw) => {
+      const o = raw as Record<string, unknown>
+      const num = escapeHtml(String(o.numero ?? '—'))
+      const created = o.createdAt
+        ? escapeHtml(new Date(String(o.createdAt)).toLocaleString('pt-BR'))
+        : '—'
+      const items = Array.isArray(o.items) ? o.items : []
+      const total = typeof o.total === 'number' && !Number.isNaN(o.total) ? o.total : 0
+      return `<tr>
+        <td data-label="Nº">${num}</td>
+        <td data-label="Data">${created}</td>
+        <td data-label="Itens">${items.length}</td>
+        <td data-label="Total">${currency.format(total)}</td>
+      </tr>`
+    })
+    .join('')
+  return `
+    <div class="table-wrap">
+      <table class="admin-table">
+        <thead><tr><th>Nº pedido</th><th>Data</th><th>Itens</th><th>Total</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`
+}
+
+function adminJwtStored(): boolean {
+  try {
+    return Boolean(localStorage.getItem(storeApi.ADMIN_JWT_STORAGE_KEY)?.trim())
+  } catch {
+    return false
+  }
+}
+
 const app = document.querySelector<HTMLDivElement>('#app')!
 const ADMIN_PIN = '1323' // troque por um PIN privado
 
-/** Foto escolhida antes de salvar o produto (data URL). Limpa ao sair do admin. */
-let adminPendingImageDataUrl: string | null = null
+/** Fotos escolhidas antes de salvar o produto (data URLs). Limpa ao sair do admin. */
+let adminPendingImageDataUrls: string[] = []
 
 /** Logo da loja escolhida em arquivo — aplicada ao salvar identidade. Limpa ao sair do admin. */
 let brandingPendingLogoDataUrl: string | null = null
@@ -739,6 +838,24 @@ function cartCount() {
   return cartItems().reduce((s, i) => s + i.qty, 0)
 }
 
+/** Ajusta quantidades do carrinho se o estoque do produto cair (ex.: painel admin). */
+function syncCartWithStock() {
+  let changed = false
+  for (const id of Object.keys(appState.cart)) {
+    const qty = appState.cart[id] ?? 0
+    if (qty <= 0) continue
+    const p = products.find((pr) => pr.id === id)
+    if (!p) continue
+    const cap = p.estoque
+    if (qty > cap) {
+      if (cap <= 0) delete appState.cart[id]
+      else appState.cart[id] = cap
+      changed = true
+    }
+  }
+  if (changed) persistState()
+}
+
 function gerarNumeroPedido() {
   return `PDO-${Date.now().toString(36).toUpperCase()}`
 }
@@ -749,7 +866,7 @@ function setStep(step: Step) {
     return
   }
   if (step !== 'admin') {
-    adminPendingImageDataUrl = null
+    adminPendingImageDataUrls = []
     brandingPendingLogoDataUrl = null
   }
   appState.prevStep = appState.step
@@ -807,8 +924,23 @@ function getBackStep(current: Step): Step | null {
 }
 
 function updateQty(id: string, qty: number) {
-  if (qty <= 0) delete appState.cart[id]
-  else appState.cart[id] = qty
+  const product = products.find((pr) => pr.id === id)
+  if (qty <= 0) {
+    delete appState.cart[id]
+  } else if (product) {
+    const cap = product.estoque
+    if (cap <= 0) {
+      alert('Item sem estoque.')
+      delete appState.cart[id]
+    } else if (qty > cap) {
+      alert(`Só há ${cap} unidade(s) disponível(is).`)
+      appState.cart[id] = cap
+    } else {
+      appState.cart[id] = qty
+    }
+  } else {
+    appState.cart[id] = qty
+  }
   persistState()
   render()
 }
@@ -942,6 +1074,31 @@ function productImageUrl(imagem: string): string {
   return u || 'https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'
 }
 
+function productPrimaryImage(p: Product): string {
+  const first = p.imagens.find((u) => u.trim())
+  return first ? first.trim() : ''
+}
+
+function productGalleryUrls(p: Product): string[] {
+  const u = p.imagens.map((x) => x.trim()).filter(Boolean).slice(0, MAX_PRODUCT_IMAGES)
+  return u.length ? u.map(productImageUrl) : [productImageUrl('')]
+}
+
+/** Mensagem de estoque na vitrine (texto combinado com o pedido do cliente). */
+function catalogStockLabel(p: Product, qtyInCart: number): string {
+  const e = p.estoque
+  if (e <= 0) return 'Item sem estoque'
+  if (qtyInCart > e) return `Só há ${e} unidade(s) disponível(is)`
+  return 'Item com estoque'
+}
+
+function catalogStockClass(p: Product, qtyInCart: number): string {
+  const e = p.estoque
+  if (e <= 0) return 'stock-out'
+  if (qtyInCart > e) return 'stock-warn'
+  return 'stock-ok'
+}
+
 // ─── Telas ────────────────────────────────────────────────────────────────────
 
 function logoHtml() {
@@ -1049,23 +1206,38 @@ function cadastroScreen() {
 
 function catalogProductCardHtml(p: Product): string {
   const qty = appState.cart[p.id] ?? 0
-  const imgSrc = escapeAttr(productImageUrl(p.imagem))
+  const gallery = productGalleryUrls(p)
+  const slides = gallery
+    .map(
+      (src, i) =>
+        `<img class="product-carousel-slide" src="${escapeAttr(src)}" alt="${escapeHtml(p.nome)}" loading="${i === 0 ? 'eager' : 'lazy'}"
+                onerror="this.src='https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'" />`
+    )
+    .join('')
   const chipLine =
     p.subcategoria != null && String(p.subcategoria).trim()
       ? `<p class="chip">${escapeHtml(String(p.subcategoria).trim())}</p>`
       : ''
+  const stockCls = catalogStockClass(p, qty)
+  const stockLabel = escapeHtml(catalogStockLabel(p, qty))
+  const plusDisabled = p.estoque <= 0 || qty >= p.estoque
   return `
           <article class="product-card">
             <div class="product-img-wrap">
-              <img src="${imgSrc}" alt="${escapeHtml(p.nome)}" loading="lazy"
-                onerror="this.src='https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'" />
+              <div class="product-img-scroll" role="group" aria-label="Fotos do produto">${slides}</div>
               ${p.custom ? '<span class="badge-custom">Personalizado</span>' : ''}
               ${p.modelo ? '<span class="badge-modelo">Exemplo</span>' : ''}
+              ${
+                gallery.length > 1
+                  ? `<span class="product-carousel-hint muted small">Deslize para ver mais fotos</span>`
+                  : ''
+              }
             </div>
             <div class="product-body">
               ${chipLine}
               <h3>${escapeHtml(p.nome)}</h3>
               <p class="muted small">${escapeHtml(p.marca)}</p>
+              <p class="stock-msg ${stockCls}">${stockLabel}</p>
               <p class="muted uso-text">${escapeHtml(p.uso)}</p>
               <button class="btn link-btn" data-action="open-tech" data-id="${p.id}">
                 Ver descrição
@@ -1075,11 +1247,11 @@ function catalogProductCardHtml(p: Product): string {
                 <div class="qty-wrap">
                   <button class="qty-btn" data-action="minus" data-id="${p.id}" aria-label="Diminuir">−</button>
                   <span class="qty-value">${qty}</span>
-                  <button class="qty-btn" data-action="plus" data-id="${p.id}" aria-label="Aumentar">+</button>
+                  <button class="qty-btn" data-action="plus" data-id="${p.id}" aria-label="Aumentar" ${plusDisabled ? 'disabled' : ''}>+</button>
                 </div>
               </div>
-              <button class="btn primary full-width mt4" data-action="open-cart" ${qty === 0 ? 'disabled' : ''}>
-                ${qty > 0 ? `Ir para carrinho (${qty})` : 'Selecione no + / -'}
+              <button class="btn primary full-width mt4" data-action="open-cart" ${qty === 0 || p.estoque <= 0 ? 'disabled' : ''}>
+                ${p.estoque <= 0 ? 'Indisponível' : qty > 0 ? `Ir para carrinho (${qty})` : 'Selecione no + / -'}
               </button>
             </div>
           </article>`
@@ -1213,7 +1385,7 @@ function cartScreen() {
             <div class="cart-item-thumb-wrap">
               <img
                 class="cart-item-thumb"
-                src="${escapeAttr(productImageUrl(item.product.imagem))}"
+                src="${escapeAttr(productImageUrl(productPrimaryImage(item.product)))}"
                 alt=""
                 loading="lazy"
                 onerror="this.src='https://placehold.co/96x96/e8f0fe/1a3a6b?text=Foto'"
@@ -1229,8 +1401,9 @@ function cartScreen() {
           <div class="qty-wrap inline">
             <button class="qty-btn" data-action="minus" data-id="${item.product.id}" aria-label="Diminuir">−</button>
             <span class="qty-value">${item.qty}</span>
-            <button class="qty-btn" data-action="plus" data-id="${item.product.id}" aria-label="Aumentar">+</button>
+            <button class="qty-btn" data-action="plus" data-id="${item.product.id}" aria-label="Aumentar" ${item.qty >= item.product.estoque ? 'disabled' : ''}>+</button>
           </div>
+          <p class="stock-msg ${catalogStockClass(item.product, item.qty)} small" style="margin-top:6px;">${escapeHtml(catalogStockLabel(item.product, item.qty))}</p>
         </td>
         <td data-label="Unitário">${currency.format(item.product.preco)}</td>
         <td data-label="Subtotal"><strong>${currency.format(item.subtotal)}</strong></td>
@@ -1412,12 +1585,13 @@ function adminScreen() {
           <div class="admin-product-thumb-wrap">
             <img
               class="admin-product-thumb"
-              src="${escapeAttr(productImageUrl(p.imagem))}"
+              src="${escapeAttr(productImageUrl(productPrimaryImage(p)))}"
               alt=""
               loading="lazy"
               onerror="this.src='https://placehold.co/96x96/e8f0fe/1a3a6b?text=Foto'"
             />
           </div>
+          <p class="muted small" style="margin:6px 0 0;">${p.imagens.length} foto(s)</p>
         </td>
         <td data-label="Nome">${escapeHtml(p.nome)}${p.modelo ? ' <span class="produto-modelo-tag" title="Peça de exemplo">Modelo</span>' : ''}</td>
         <td data-label="Marca">${escapeHtml(p.marca)}</td>
@@ -1433,6 +1607,13 @@ function adminScreen() {
             data-index="${i}"
             aria-label="Preço de ${escapeAttr(p.nome)}"
           />
+        </td>
+        <td data-label="Estoque">
+          <div class="admin-stock-row">
+            <button type="button" class="qty-btn" data-action="admin-stock-minus" data-index="${i}" aria-label="Diminuir estoque">−</button>
+            <span class="admin-stock-value">${p.estoque}</span>
+            <button type="button" class="qty-btn" data-action="admin-stock-plus" data-index="${i}" aria-label="Aumentar estoque">+</button>
+          </div>
         </td>
         <td data-label="Ações">
           <button class="btn tiny" data-action="admin-save-price" data-index="${i}" aria-label="Salvar novo preço de ${escapeAttr(p.nome)}">Salvar</button>
@@ -1481,7 +1662,31 @@ function adminScreen() {
       <div class="card">
         <p class="eyebrow">Painel administrativo</p>
         <h1>Gerenciar Produtos</h1>
-        <p class="lead">Cadastre peças da sua loja de roupas. Tudo fica salvo neste navegador até você publicar com servidor.</p>
+        <p class="lead">Cadastre peças da sua loja de roupas. Com API + MongoDB, fotos podem ir para o servidor e o catálogo sincroniza automaticamente em desenvolvimento.</p>
+      </div>
+
+      <div class="card" id="admin-pedidos-panel">
+        <h2>Pedidos no servidor</h2>
+        <p class="muted small" style="margin-bottom:10px;">
+          Últimos pedidos gravados no MongoDB. Se a API exigir credencial, prefira <strong>Entrar na API</strong> (JWT com
+          <code>JWT_SECRET</code> no servidor) em vez de colocar a chave no bundle. Alternativa: mesma chave em
+          <strong>ADMIN_API_KEY</strong> (servidor) e <strong>VITE_ADMIN_API_KEY</strong> (<code>.env</code> do front).
+        </p>
+        <p class="muted small" style="margin-bottom:8px;">
+          ${
+            adminJwtStored()
+              ? '<strong>Sessão API:</strong> token JWT guardado neste navegador.'
+              : import.meta.env?.VITE_ADMIN_API_KEY
+                ? '<strong>Sessão API:</strong> usando chave do <code>.env</code> (VITE_ADMIN_API_KEY).'
+                : '<strong>Sessão API:</strong> não configurada — use “Entrar na API” ou defina VITE_ADMIN_API_KEY.'
+          }
+        </p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center;">
+          <button type="button" class="btn" id="admin-api-jwt-login">Entrar na API (JWT)</button>
+          <button type="button" class="btn tiny danger" id="admin-api-jwt-logout">Sair da API</button>
+        </div>
+        <button type="button" class="btn primary" id="admin-load-pedidos">Carregar pedidos</button>
+        <div id="admin-pedidos-out" class="admin-pedidos-out" style="margin-top:14px;"></div>
       </div>
 
       <div class="card">
@@ -1593,19 +1798,30 @@ function adminScreen() {
             Preço (R$) *
             <input required type="number" min="0" step="0.01" name="preco" placeholder="0,00" />
           </label>
+          <label>
+            Estoque inicial *
+            <input required type="number" min="0" step="1" name="estoque" value="0" placeholder="0" />
+          </label>
           <div class="full admin-photo-block">
-            <p class="muted small" style="margin-bottom: 8px;">Foto da peça — use a galeria, arquivos do computador ou a câmera do celular.</p>
+            <p class="muted small" style="margin-bottom: 8px;">Fotos da peça (até ${MAX_PRODUCT_IMAGES}) — frente, costas, lateral… Com API no ar, as imagens podem ir para o servidor ou para o <strong>Cloudinary</strong> (se <code>CLOUDINARY_URL</code> estiver no .env da API); senão, ficam em base64 no navegador.</p>
             <div class="admin-photo-actions">
               <button type="button" class="btn" id="admin-pick-gallery">📁 Galeria ou arquivo</button>
               <button type="button" class="btn" id="admin-pick-camera">📷 Tirar foto</button>
-              <button type="button" class="btn tiny danger" id="admin-clear-photo">Remover foto</button>
+              <button type="button" class="btn tiny danger" id="admin-clear-photo">Remover todas</button>
             </div>
-            <input type="file" id="admin-product-file-gallery" accept="image/*" class="visually-hidden" tabindex="-1" aria-hidden="true" />
+            <input type="file" id="admin-product-file-gallery" accept="image/*" multiple class="visually-hidden" tabindex="-1" aria-hidden="true" />
             <input type="file" id="admin-product-file-camera" accept="image/*" capture="environment" class="visually-hidden" tabindex="-1" aria-hidden="true" />
-            <div class="admin-photo-preview-wrap">
-              <img id="admin-product-preview" class="admin-product-preview" alt="Pré-visualização"
-                ${adminPendingImageDataUrl ? `src="${escapeAttr(adminPendingImageDataUrl)}"` : 'hidden'}
-                style="max-height: 200px; border-radius: 12px; object-fit: contain; ${adminPendingImageDataUrl ? '' : 'display: none;'}" />
+            <p class="muted small" id="admin-photo-count">${adminPendingImageDataUrls.length}/${MAX_PRODUCT_IMAGES} fotos</p>
+            <div id="admin-photo-thumbs" class="admin-photo-thumbs">
+              ${adminPendingImageDataUrls
+                .map(
+                  (url, idx) => `
+                <div class="admin-thumb-cell">
+                  <img src="${escapeAttr(url)}" alt="" />
+                  <button type="button" class="btn tiny danger admin-thumb-remove" data-action="admin-remove-thumb" data-thumb-index="${idx}" aria-label="Remover foto">×</button>
+                </div>`
+                )
+                .join('')}
             </div>
           </div>
           <label class="full">
@@ -1635,7 +1851,7 @@ function adminScreen() {
         </p>
         <div class="table-wrap">
           <table class="admin-table">
-            <thead><tr><th>Foto</th><th>Nome</th><th>Marca</th><th>Categoria</th><th>Preço</th><th>Ações</th></tr></thead>
+            <thead><tr><th>Foto</th><th>Nome</th><th>Marca</th><th>Categoria</th><th>Preço</th><th>Estoque</th><th>Ações</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
@@ -1676,9 +1892,19 @@ function template() {
             <button class="btn" id="close-ficha" aria-label="Fechar">✕</button>
           </div>
           <div class="ficha-body">
+            <div class="ficha-gallery-scroll">
+              ${productGalleryUrls(fichaProduto)
+                .map(
+                  (src) =>
+                    `<img class="ficha-gallery-img" src="${escapeAttr(src)}" alt="" loading="lazy"
+                      onerror="this.src='https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'" />`
+                )
+                .join('')}
+            </div>
             <p><strong>Marca:</strong> ${escapeHtml(fichaProduto.marca)}</p>
             <p><strong>Categoria:</strong> ${escapeHtml(fichaProduto.categoria)}${fichaProduto.subcategoria ? ` · ${escapeHtml(fichaProduto.subcategoria)}` : ''}</p>
             <p><strong>Preço:</strong> ${currency.format(fichaProduto.preco)}</p>
+            <p><strong>Estoque:</strong> ${fichaProduto.estoque} un.</p>
             <p><strong>Descrição:</strong> ${escapeHtml(fichaProduto.uso)}</p>
           </div>
         </div>
@@ -1915,23 +2141,71 @@ function bindEvents() {
   const checkoutForm = document.getElementById('checkout-form') as HTMLFormElement | null
   checkoutForm?.addEventListener('submit', (e) => {
     e.preventDefault()
-    const selected = document.querySelector<HTMLInputElement>('input[name="deliveryMode"]:checked')
-    const selectedPayment = document.querySelector<HTMLInputElement>('input[name="paymentMethod"]:checked')
-    appState.deliveryMode = clampDeliveryModeId(selected?.value)
-    appState.paymentMethod = clampPaymentMethodId(selectedPayment?.value)
+    void (async () => {
+      const selected = document.querySelector<HTMLInputElement>('input[name="deliveryMode"]:checked')
+      const selectedPayment = document.querySelector<HTMLInputElement>('input[name="paymentMethod"]:checked')
+      appState.deliveryMode = clampDeliveryModeId(selected?.value)
+      appState.paymentMethod = clampPaymentMethodId(selectedPayment?.value)
 
-    const payOpt = getPaymentOption(appState.paymentMethod)
-    if (payOpt?.asksCashChange && appState.cashChangeFor) {
-      const changeValue = Number(appState.cashChangeFor)
-      if (Number.isNaN(changeValue) || changeValue < cartTotal()) {
-        alert(`O valor de troco deve ser maior ou igual ao total do pedido (${currency.format(cartTotal())}).`)
-        cashChangeInput?.focus()
+      const payOpt = getPaymentOption(appState.paymentMethod)
+      if (payOpt?.asksCashChange && appState.cashChangeFor) {
+        const changeValue = Number(appState.cashChangeFor)
+        if (Number.isNaN(changeValue) || changeValue < cartTotal()) {
+          alert(`O valor de troco deve ser maior ou igual ao total do pedido (${currency.format(cartTotal())}).`)
+          cashChangeInput?.focus()
+          return
+        }
+      }
+
+      for (const { product, qty } of cartItems()) {
+        if (qty > product.estoque) {
+          alert(
+            product.estoque <= 0
+              ? `"${product.nome}" está sem estoque. Ajuste o carrinho.`
+              : `"${product.nome}": só há ${product.estoque} unidade(s) disponível(is).`
+          )
+          return
+        }
+      }
+
+      const useApiPedido =
+        (import.meta.env.DEV || import.meta.env.VITE_SYNC_PRODUCTS_FROM_API === 'true') &&
+        cartItems().length > 0 &&
+        cartItems().every(({ product }) => storeApi.isMongoObjectId(product.id))
+
+      if (useApiPedido) {
+        const numero = gerarNumeroPedido()
+        const r = await storeApi.postPedidoJson({
+          numero,
+          items: cartItems().map(({ product, qty }) => ({ productId: product.id, qty })),
+          total: cartTotal(),
+          customer: appState.customer,
+          deliveryMode: appState.deliveryMode,
+          paymentMethod: appState.paymentMethod,
+          cashChangeFor: appState.cashChangeFor
+        })
+        if (r.ok) {
+          appState.pedidoNumero = numero
+          persistState()
+          await refreshProductsFromApi()
+          setStep('concluido')
+          return
+        }
+        alert('Não foi possível registrar o pedido na API: ' + r.erro)
         return
       }
-    }
 
-    appState.pedidoNumero = gerarNumeroPedido()
-    setStep('concluido')
+      products = products.map((pr) => {
+        const q = appState.cart[pr.id]
+        if (!q || q <= 0) return pr
+        return { ...pr, estoque: Math.max(0, pr.estoque - q) }
+      })
+      saveProducts(products)
+
+      appState.pedidoNumero = gerarNumeroPedido()
+      persistState()
+      setStep('concluido')
+    })()
   })
 
   // Atualiza radio-card ao clicar
@@ -2131,98 +2405,268 @@ function bindEvents() {
   const adminPickGallery = document.getElementById('admin-pick-gallery')
   const adminPickCamera = document.getElementById('admin-pick-camera')
   const adminClearPhoto = document.getElementById('admin-clear-photo')
-  const adminPreview = document.getElementById('admin-product-preview') as HTMLImageElement | null
 
-  const applyAdminPreview = (dataUrl: string) => {
-    if (dataUrl.length > 6_500_000) {
-      alert('Esta imagem é grande demais para guardar no navegador. Reduza o tamanho do arquivo.')
-      return
+  const appendAdminDataUrls = (urls: string[]) => {
+    const next = [...adminPendingImageDataUrls]
+    for (const u of urls) {
+      const s = u.trim()
+      if (!s) continue
+      if (s.startsWith('data:') && s.length > 6_500_000) {
+        alert('Uma das imagens é grande demais para guardar no navegador. Reduza o tamanho.')
+        continue
+      }
+      if (next.length >= MAX_PRODUCT_IMAGES) {
+        alert(`Limite de ${MAX_PRODUCT_IMAGES} fotos por produto.`)
+        break
+      }
+      next.push(s)
     }
-    adminPendingImageDataUrl = dataUrl
-    if (adminPreview) {
-      adminPreview.removeAttribute('hidden')
-      adminPreview.src = dataUrl
-      adminPreview.style.display = 'block'
-    }
+    adminPendingImageDataUrls = next
+    render()
   }
 
-  const readAdminImageFile = (file: File | undefined) => {
+  const readAdminImageFile = (file: File | undefined, onDone: (url: string) => void) => {
     if (!file || !file.type.startsWith('image/')) {
       alert('Selecione um arquivo de imagem.')
       return
     }
     const reader = new FileReader()
     reader.onload = () => {
-      if (typeof reader.result === 'string') applyAdminPreview(reader.result)
+      if (typeof reader.result === 'string') onDone(reader.result)
     }
     reader.readAsDataURL(file)
   }
 
+  const readFileAsDataUrlAsync = (file: File): Promise<string | null> =>
+    new Promise((resolve) => {
+      if (!file.type.startsWith('image/')) {
+        resolve(null)
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => {
+        if (typeof reader.result !== 'string') resolve(null)
+        else if (reader.result.length > 6_500_000) resolve(null)
+        else resolve(reader.result)
+      }
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(file)
+    })
+
   adminPickGallery?.addEventListener('click', () => adminFileGallery?.click())
   adminPickCamera?.addEventListener('click', () => adminFileCamera?.click())
   adminFileGallery?.addEventListener('change', () => {
-    readAdminImageFile(adminFileGallery.files?.[0])
-    adminFileGallery.value = ''
+    void (async () => {
+      const files = adminFileGallery?.files
+      if (!files?.length) {
+        adminFileGallery!.value = ''
+        return
+      }
+      const fileArr = Array.from(files)
+      const room = MAX_PRODUCT_IMAGES - adminPendingImageDataUrls.length
+      if (room <= 0) {
+        alert(`Limite de ${MAX_PRODUCT_IMAGES} fotos por produto.`)
+        adminFileGallery!.value = ''
+        return
+      }
+      if (shouldTryServerUpload()) {
+        const slice = fileArr.slice(0, room)
+        const up = await storeApi.postUploadArquivos(slice)
+        if (up.ok) {
+          appendAdminDataUrls(up.urls)
+          adminFileGallery!.value = ''
+          return
+        }
+        if (up.erro && !up.erro.includes('Sem conexão')) {
+          alert('Upload no servidor: ' + up.erro + '\nTentando salvar no navegador (base64)…')
+        }
+      }
+      const urls: string[] = []
+      for (const file of fileArr) {
+        if (adminPendingImageDataUrls.length + urls.length >= MAX_PRODUCT_IMAGES) {
+          alert(`Limite de ${MAX_PRODUCT_IMAGES} fotos por produto.`)
+          break
+        }
+        const url = await readFileAsDataUrlAsync(file)
+        if (!url) alert('Não foi possível ler uma das imagens (tipo inválido ou arquivo grande demais).')
+        else urls.push(url)
+      }
+      if (urls.length) appendAdminDataUrls(urls)
+      adminFileGallery!.value = ''
+    })()
   })
   adminFileCamera?.addEventListener('change', () => {
-    readAdminImageFile(adminFileCamera.files?.[0])
-    adminFileCamera.value = ''
+    void (async () => {
+      const file = adminFileCamera?.files?.[0]
+      if (!file) {
+        adminFileCamera!.value = ''
+        return
+      }
+      if (adminPendingImageDataUrls.length >= MAX_PRODUCT_IMAGES) {
+        alert(`Limite de ${MAX_PRODUCT_IMAGES} fotos por produto.`)
+        adminFileCamera!.value = ''
+        return
+      }
+      if (shouldTryServerUpload()) {
+        const up = await storeApi.postUploadArquivos([file])
+        if (up.ok) {
+          appendAdminDataUrls(up.urls)
+          adminFileCamera!.value = ''
+          return
+        }
+        if (up.erro && !up.erro.includes('Sem conexão')) {
+          alert('Upload no servidor: ' + up.erro + '\nUsando cópia local (base64)…')
+        }
+      }
+      readAdminImageFile(file, (url) => {
+        appendAdminDataUrls([url])
+        adminFileCamera!.value = ''
+      })
+    })()
   })
   adminClearPhoto?.addEventListener('click', () => {
-    adminPendingImageDataUrl = null
-    if (adminPreview) {
-      adminPreview.removeAttribute('src')
-      adminPreview.setAttribute('hidden', '')
-      adminPreview.style.display = 'none'
+    adminPendingImageDataUrls = []
+    render()
+  })
+
+  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-remove-thumb"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.thumbIndex)
+      if (Number.isNaN(idx)) return
+      adminPendingImageDataUrls = adminPendingImageDataUrls.filter((_, i) => i !== idx)
+      render()
+    })
+  })
+
+  document.getElementById('admin-api-jwt-login')?.addEventListener('click', () => {
+    void (async () => {
+      const pwd = prompt('Senha da API (ADMIN_PASSWORD ou ADMIN_API_KEY no servidor):')
+      if (pwd == null) return
+      const r = await storeApi.postAuthLogin(pwd.trim())
+      if (!r.ok) {
+        alert(r.erro)
+        return
+      }
+      try {
+        localStorage.setItem(storeApi.ADMIN_JWT_STORAGE_KEY, r.token)
+      } catch {
+        alert('Não foi possível guardar o token neste navegador.')
+        return
+      }
+      alert('Sessão API ativa (JWT).')
+      render()
+    })()
+  })
+  document.getElementById('admin-api-jwt-logout')?.addEventListener('click', () => {
+    storeApi.clearAdminJwt()
+    render()
+  })
+
+  document.getElementById('admin-load-pedidos')?.addEventListener('click', async () => {
+    const out = document.getElementById('admin-pedidos-out')
+    if (!out) return
+    out.innerHTML = '<p class="muted small">Carregando…</p>'
+    const list = await storeApi.fetchPedidos(15000)
+    if (list === null) {
+      out.innerHTML =
+        '<p class="muted small">Não foi possível carregar. Verifique API e MongoDB. Se a gestão estiver protegida, use <strong>Entrar na API</strong> (JWT) ou defina <strong>VITE_ADMIN_API_KEY</strong> igual a <strong>ADMIN_API_KEY</strong> no <code>.env</code>.</p>'
+      return
     }
+    if (list.length === 0) {
+      out.innerHTML = '<p class="muted small">Nenhum pedido registrado ainda.</p>'
+      return
+    }
+    out.innerHTML = adminPedidosTableHtml(list)
   })
 
   // Admin – adicionar produto
   const adminForm = document.getElementById('admin-form') as HTMLFormElement | null
   adminForm?.addEventListener('submit', (e) => {
     e.preventDefault()
-    const fd = new FormData(adminForm)
-    const get = (k: string) => String(fd.get(k) ?? '').trim()
-    const nome = get('nome')
-    const marca = get('marca')
-    const categoria = get('categoria') as Category
-    const preco = parseFloat(get('preco'))
-    const uso = get('uso')
-    if (!nome || !marca || !categoria || isNaN(preco) || !uso) {
-      alert('Preencha os campos obrigatórios do produto.')
-      return
-    }
-    const imagem =
-      adminPendingImageDataUrl ||
-      'https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'
-    const newProduct: Product = {
-      id: `custom-${Date.now()}`,
-      nome,
-      marca,
-      categoria,
-      subcategoria: get('subcategoria') || undefined,
-      preco,
-      imagem,
-      uso,
-      custom: true,
-      modelo: false
-    }
-    products = [...products, newProduct]
-    saveProducts(products)
-    adminPendingImageDataUrl = null
-    adminForm.reset()
-    render()
+    void (async () => {
+      const fd = new FormData(adminForm)
+      const get = (k: string) => String(fd.get(k) ?? '').trim()
+      const nome = get('nome')
+      const marca = get('marca')
+      const categoria = get('categoria') as Category
+      const preco = parseFloat(get('preco'))
+      const uso = get('uso')
+      const estoqueIni = Math.max(0, Math.floor(Number(get('estoque'))))
+      if (!nome || !marca || !categoria || isNaN(preco) || !uso) {
+        alert('Preencha os campos obrigatórios do produto.')
+        return
+      }
+      if (Number.isNaN(estoqueIni)) {
+        alert('Informe o estoque inicial (número inteiro ≥ 0).')
+        return
+      }
+      const imagens =
+        adminPendingImageDataUrls.length > 0
+          ? [...adminPendingImageDataUrls].slice(0, MAX_PRODUCT_IMAGES)
+          : ['https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto']
+
+      const useApi =
+        import.meta.env.DEV || import.meta.env.VITE_SYNC_PRODUCTS_FROM_API === 'true'
+      if (useApi) {
+        const r = await storeApi.postProdutoJson({
+          nome,
+          marca,
+          categoria,
+          subcategoria: get('subcategoria') || undefined,
+          preco,
+          imagens,
+          estoque: estoqueIni,
+          uso,
+          custom: true,
+          modelo: false
+        })
+        if (r.ok) {
+          products = [...products, normalizeProduct(r.data)]
+          saveProducts(products)
+          adminPendingImageDataUrls = []
+          adminForm.reset()
+          render()
+          return
+        }
+        alert('API: não foi possível criar o produto (' + r.erro + '). Salvando só no navegador.')
+      }
+
+      const newProduct: Product = {
+        id: `custom-${Date.now()}`,
+        nome,
+        marca,
+        categoria,
+        subcategoria: get('subcategoria') || undefined,
+        preco,
+        imagens,
+        estoque: estoqueIni,
+        uso,
+        custom: true,
+        modelo: false
+      }
+      products = [...products, newProduct]
+      saveProducts(products)
+      adminPendingImageDataUrls = []
+      adminForm.reset()
+      render()
+    })()
   })
 
   // Admin – excluir produto
   document.querySelectorAll<HTMLButtonElement>('[data-action="admin-delete"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const idx = Number(btn.dataset.index)
-      if (confirm(`Remover "${products[idx]?.nome}"?`)) {
+      void (async () => {
+        if (!confirm(`Remover "${products[idx]?.nome}"?`)) return
+        const p = products[idx]
+        if (p && storeApi.isMongoObjectId(p.id)) {
+          const ok = await storeApi.deleteProduto(p.id)
+          if (ok && (await refreshProductsFromApi())) return
+        }
         products = products.filter((_, i) => i !== idx)
         saveProducts(products)
         render()
-      }
+      })()
     })
   })
 
@@ -2230,16 +2674,77 @@ function bindEvents() {
   document.querySelectorAll<HTMLButtonElement>('[data-action="admin-save-price"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const idx = Number(btn.dataset.index)
-      const input = document.querySelector<HTMLInputElement>(`[data-action="admin-price"][data-index="${idx}"]`)
-      const nextPrice = Number(input?.value)
-      if (!input || Number.isNaN(nextPrice) || nextPrice < 0) {
-        alert('Informe um preço válido para salvar.')
-        input?.focus()
-        return
-      }
-      products[idx] = { ...products[idx], preco: nextPrice }
-      saveProducts(products)
-      render()
+      void (async () => {
+        const input = document.querySelector<HTMLInputElement>(`[data-action="admin-price"][data-index="${idx}"]`)
+        const nextPrice = Number(input?.value)
+        if (!input || Number.isNaN(nextPrice) || nextPrice < 0) {
+          alert('Informe um preço válido para salvar.')
+          input?.focus()
+          return
+        }
+        const cur = products[idx]
+        if (cur && storeApi.isMongoObjectId(cur.id)) {
+          const r = await storeApi.patchProdutoJson(cur.id, { preco: nextPrice })
+          if (r.ok) {
+            products[idx] = normalizeProduct(r.data)
+            saveProducts(products)
+            render()
+            return
+          }
+          alert('API: ' + r.erro)
+        }
+        products[idx] = { ...products[idx], preco: nextPrice }
+        saveProducts(products)
+        render()
+      })()
+    })
+  })
+
+  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-stock-plus"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.index)
+      void (async () => {
+        const cur = products[idx]
+        if (!cur) return
+        const next = cur.estoque + 1
+        if (storeApi.isMongoObjectId(cur.id)) {
+          const r = await storeApi.patchProdutoJson(cur.id, { estoque: next })
+          if (r.ok) {
+            products[idx] = normalizeProduct(r.data)
+            saveProducts(products)
+            render()
+            return
+          }
+          alert('API: ' + r.erro)
+        }
+        products[idx] = { ...cur, estoque: next }
+        saveProducts(products)
+        render()
+      })()
+    })
+  })
+
+  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-stock-minus"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.index)
+      void (async () => {
+        const cur = products[idx]
+        if (!cur) return
+        const next = Math.max(0, cur.estoque - 1)
+        if (storeApi.isMongoObjectId(cur.id)) {
+          const r = await storeApi.patchProdutoJson(cur.id, { estoque: next })
+          if (r.ok) {
+            products[idx] = normalizeProduct(r.data)
+            saveProducts(products)
+            render()
+            return
+          }
+          alert('API: ' + r.erro)
+        }
+        products[idx] = { ...cur, estoque: next }
+        saveProducts(products)
+        render()
+      })()
     })
   })
 
@@ -2250,20 +2755,46 @@ function bindEvents() {
     if (!confirm(`Remover ${n} peça(s) de exemplo do catálogo? Elas deixam de aparecer para o cliente.`)) {
       return
     }
-    products = products.filter((p) => !p.modelo)
-    localStorage.setItem(STORAGE_KEYS.modelosExemplosRemovidos, '1')
-    saveProducts(products)
-    render()
+    void (async () => {
+      const modelos = products.filter((p) => p.modelo)
+      const useApi =
+        import.meta.env.DEV || import.meta.env.VITE_SYNC_PRODUCTS_FROM_API === 'true'
+      if (useApi) {
+        for (const p of modelos) {
+          if (storeApi.isMongoObjectId(p.id)) await storeApi.deleteProduto(p.id)
+        }
+        if (await refreshProductsFromApi()) {
+          localStorage.setItem(STORAGE_KEYS.modelosExemplosRemovidos, '1')
+          return
+        }
+      }
+      products = products.filter((p) => !p.modelo)
+      localStorage.setItem(STORAGE_KEYS.modelosExemplosRemovidos, '1')
+      saveProducts(products)
+      render()
+    })()
   })
 
   // Admin – esvaziar catálogo
   document.getElementById('reset-products')?.addEventListener('click', () => {
-    if (confirm('Remover todos os produtos cadastrados? Esta ação não pode ser desfeita.')) {
+    if (!confirm('Remover todos os produtos cadastrados? Esta ação não pode ser desfeita.')) return
+    void (async () => {
+      const useApi =
+        import.meta.env.DEV || import.meta.env.VITE_SYNC_PRODUCTS_FROM_API === 'true'
+      if (useApi && products.every((p) => storeApi.isMongoObjectId(p.id))) {
+        for (const p of products) {
+          await storeApi.deleteProduto(p.id)
+        }
+        if (await refreshProductsFromApi()) {
+          localStorage.setItem(STORAGE_KEYS.modelosExemplosRemovidos, '1')
+          return
+        }
+      }
       products = []
       localStorage.setItem(STORAGE_KEYS.modelosExemplosRemovidos, '1')
       saveProducts(products)
       render()
-    }
+    })()
   })
 
   document.getElementById('back-from-admin')?.addEventListener('click', () => setStep('catalogo'))
@@ -2272,8 +2803,10 @@ function bindEvents() {
 // ─── Render ───────────────────────────────────────────────────────────────────
 
 function render() {
+  syncCartWithStock()
   app.innerHTML = template()
   bindEvents()
 }
 
 render()
+void tryReplaceProductsFromApiIfDev()
