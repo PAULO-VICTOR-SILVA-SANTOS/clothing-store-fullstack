@@ -42,6 +42,11 @@ type Category =
   | 'Casacos e jaquetas'
   | 'Outros'
 
+type PieceSize = 'PP' | 'P' | 'M' | 'G' | 'GG'
+const PIECE_SIZES: PieceSize[] = ['PP', 'P', 'M', 'G', 'GG']
+const DEFAULT_PIECE_SIZE: PieceSize = 'M'
+const CART_KEY_SEPARATOR = '::size::'
+
 type Product = {
   id: string
   nome: string
@@ -53,6 +58,8 @@ type Product = {
   imagens: string[]
   estoque: number
   uso: string
+  /** Tamanhos disponíveis para o cliente escolher no catálogo. */
+  tamanhos: PieceSize[]
   custom?: boolean // adicionado pelo admin
   /** Peça de exemplo (imagens em /modelos/); pode remover no painel */
   modelo?: boolean
@@ -78,7 +85,7 @@ type AppState = {
 // ─── Catálogo base: peças modelo (imagens em /public/modelos/) na primeira visita ───
 
 function seedModeloProducts(): Product[] {
-  return [
+  const base: Omit<Product, 'tamanhos'>[] = [
     {
       id: 'modelo-camisa-1',
       nome: 'Camisa modelo 1',
@@ -176,6 +183,7 @@ function seedModeloProducts(): Product[] {
       modelo: true
     }
   ]
+  return base.map((p) => ({ ...p, tamanhos: [...PIECE_SIZES] }))
 }
 
 // ─── Persistência (LocalStorage) ─────────────────────────────────────────────
@@ -417,12 +425,15 @@ function normalizeLoadedCheckoutOptions(parsed: Partial<CheckoutOptions>): Check
   return applyPaymentFlagsToOptions(applyDeliveryFlagsToOptions(base))
 }
 
+/** Taxa de entrega padrão (R$) no painel; editável a qualquer momento. Só entra no total com “Cobrar taxa…” ativo. */
+const DEFAULT_DELIVERY_FEE_REAIS = 5
+
 const DEFAULT_CHECKOUT_OPTIONS: CheckoutOptions = applyPaymentFlagsToOptions(
   applyDeliveryFlagsToOptions({
     pickupEnabled: true,
     deliveryEnabled: true,
     deliveryFeeEnabled: false,
-    deliveryFee: 0,
+    deliveryFee: DEFAULT_DELIVERY_FEE_REAIS,
     paymentCashEnabled: true,
     paymentCardEnabled: true,
     paymentPixEnabled: true,
@@ -513,7 +524,7 @@ type StoreBranding = {
   logoUrl: string
   /** Opcional: texto institucional sobre a empresa */
   descricaoEmpresa: string
-  /** Opcional: ramo de atividade (ex.: venda de roupas) */
+  /** Legado (não editável no admin); mantido só para compatibilidade com JSON antigo. */
   ramoEmpresa: string
   /** Opcional: endereço da loja */
   enderecoEmpresa: string
@@ -562,7 +573,7 @@ function loadBranding(): StoreBranding {
       logoUrl: typeof parsed.logoUrl === 'string' ? parsed.logoUrl.trim() : '',
       descricaoEmpresa:
         typeof parsed.descricaoEmpresa === 'string' ? parsed.descricaoEmpresa.trim() : '',
-      ramoEmpresa: typeof parsed.ramoEmpresa === 'string' ? parsed.ramoEmpresa.trim() : '',
+      ramoEmpresa: '',
       enderecoEmpresa:
         typeof parsed.enderecoEmpresa === 'string' ? parsed.enderecoEmpresa.trim() : '',
       telefoneEmpresa:
@@ -573,7 +584,6 @@ function loadBranding(): StoreBranding {
       normalized.tagline === LEGACY_DEFAULT_BRANDING.tagline &&
       !normalized.logoUrl &&
       !normalized.descricaoEmpresa &&
-      !normalized.ramoEmpresa &&
       !normalized.enderecoEmpresa &&
       !normalized.telefoneEmpresa
     if (isLegacyDefault) return { ...DEFAULT_BRANDING }
@@ -612,10 +622,7 @@ function applyDocumentBranding() {
 function hasStoreExtraInfo(): boolean {
   const s = storeBranding
   return Boolean(
-    s.descricaoEmpresa.trim() ||
-      s.ramoEmpresa.trim() ||
-      s.enderecoEmpresa.trim() ||
-      s.telefoneEmpresa.trim()
+    s.descricaoEmpresa.trim() || s.enderecoEmpresa.trim() || s.telefoneEmpresa.trim()
   )
 }
 
@@ -624,7 +631,6 @@ function storeAboutCardHtml(): string {
   if (!hasStoreExtraInfo()) return ''
   const s = storeBranding
   const d = s.descricaoEmpresa.trim()
-  const r = s.ramoEmpresa.trim()
   const e = s.enderecoEmpresa.trim()
   const t = s.telefoneEmpresa.trim()
   const telDigits = t.replace(/\D/g, '')
@@ -637,7 +643,6 @@ function storeAboutCardHtml(): string {
           ? `<div class="store-about-desc muted">${escapeHtml(d)}</div>`
           : ''
       }
-      ${r ? `<p class="store-about-line"><strong>Ramo:</strong> ${escapeHtml(r)}</p>` : ''}
       ${e ? `<p class="store-about-line"><strong>Endereço:</strong> ${escapeHtml(e)}</p>` : ''}
       ${
         t
@@ -712,8 +717,25 @@ function normalizeCategory(raw: unknown): Category {
   return 'Outros'
 }
 
+function normalizeSize(raw: unknown): PieceSize | null {
+  if (typeof raw !== 'string') return null
+  const v = raw.trim().toUpperCase()
+  if (v === 'PP' || v === 'P' || v === 'M' || v === 'G' || v === 'GG') return v
+  return null
+}
+
+function normalizeProductSizes(raw: unknown): PieceSize[] {
+  if (!Array.isArray(raw)) return [...PIECE_SIZES]
+  const set = new Set<PieceSize>()
+  for (const item of raw) {
+    const size = normalizeSize(item)
+    if (size) set.add(size)
+  }
+  return set.size > 0 ? PIECE_SIZES.filter((size) => set.has(size)) : [...PIECE_SIZES]
+}
+
 function normalizeProduct(raw: unknown): Product {
-  const p = raw as Partial<Product> & { imagem?: unknown }
+  const p = raw as Partial<Product> & { imagem?: unknown; tamanhos?: unknown }
   let imagens: string[] = []
   if (Array.isArray(p.imagens)) {
     imagens = p.imagens
@@ -741,6 +763,7 @@ function normalizeProduct(raw: unknown): Product {
     imagens,
     estoque,
     uso: String(p.uso ?? ''),
+    tamanhos: normalizeProductSizes(p.tamanhos),
     custom: p.custom === true,
     modelo: (p as Partial<Product>).modelo === true
   }
@@ -1076,8 +1099,13 @@ let adminPendingImageDataUrls: string[] = []
 let brandingPendingLogoDataUrl: string | null = null
 
 let adminSecretBound = false
-let adminLogoTapCount = 0
-let adminLogoTapResetTimer: ReturnType<typeof setTimeout> | null = null
+let adminSecretTapCount = 0
+let adminSecretTapResetTimer: ReturnType<typeof setTimeout> | null = null
+const catalogSelectedSizes: Record<string, PieceSize> = {}
+
+function notifySalvoComSucesso(): void {
+  alert('Salvo com sucesso.')
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1095,15 +1123,98 @@ function getFiltered(): Product[] {
   })
 }
 
+function normalizeCartItemSize(raw: unknown): PieceSize {
+  return normalizeSize(raw) ?? DEFAULT_PIECE_SIZE
+}
+
+function buildCartItemKey(productId: string, size: PieceSize): string {
+  return `${productId}${CART_KEY_SEPARATOR}${size}`
+}
+
+function parseCartItemKey(key: string): { productId: string; size: PieceSize } {
+  const idx = key.lastIndexOf(CART_KEY_SEPARATOR)
+  if (idx < 0) return { productId: key, size: DEFAULT_PIECE_SIZE }
+  return {
+    productId: key.slice(0, idx),
+    size: normalizeCartItemSize(key.slice(idx + CART_KEY_SEPARATOR.length))
+  }
+}
+
+function firstAvailableSize(p: Product): PieceSize {
+  return p.tamanhos[0] ?? DEFAULT_PIECE_SIZE
+}
+
+function qtyInCartForProductSize(productId: string, size: PieceSize): number {
+  return appState.cart[buildCartItemKey(productId, size)] ?? 0
+}
+
+function productQtyInCart(productId: string): number {
+  let total = 0
+  for (const [key, qty] of Object.entries(appState.cart)) {
+    if (qty <= 0) continue
+    if (parseCartItemKey(key).productId === productId) total += qty
+  }
+  return total
+}
+
+/** Ajusta carrinho para não ultrapassar estoque total do produto somando todos os tamanhos. */
+function enforceCartStockForProduct(productId: string, maxStock: number): boolean {
+  const keys = Object.keys(appState.cart).filter((k) => parseCartItemKey(k).productId === productId)
+  const total = keys.reduce((sum, key) => sum + (appState.cart[key] ?? 0), 0)
+  if (total <= maxStock) return false
+  let overflow = total - Math.max(0, maxStock)
+  for (let i = keys.length - 1; i >= 0 && overflow > 0; i -= 1) {
+    const key = keys[i]
+    const qty = appState.cart[key] ?? 0
+    if (qty <= 0) continue
+    if (qty <= overflow) {
+      delete appState.cart[key]
+      overflow -= qty
+    } else {
+      appState.cart[key] = qty - overflow
+      overflow = 0
+    }
+  }
+  return true
+}
+
+function selectedSizeFromProductCard(productId: string): PieceSize {
+  const el = document.querySelector<HTMLSelectElement>(`[data-action="size"][data-id="${productId}"]`)
+  const product = products.find((p) => p.id === productId)
+  const normalized = normalizeSize(el?.value)
+  if (normalized && product?.tamanhos.includes(normalized)) {
+    catalogSelectedSizes[productId] = normalized
+    return normalized
+  }
+  const fromMemory = normalizeSize(catalogSelectedSizes[productId])
+  if (fromMemory && product?.tamanhos.includes(fromMemory)) return fromMemory
+  return product ? firstAvailableSize(product) : DEFAULT_PIECE_SIZE
+}
+
+function cartItemSizeLabel(size: PieceSize): string {
+  return `Tamanho ${size}`
+}
+
 function cartItems() {
   return Object.entries(appState.cart)
     .filter(([, q]) => q > 0)
-    .map(([id, qty]) => {
-      const product = products.find((p) => p.id === id)
+    .map(([cartKey, qty]) => {
+      const { productId, size } = parseCartItemKey(cartKey)
+      const product = products.find((p) => p.id === productId)
       if (!product) return null
-      return { product, qty, subtotal: qty * product.preco }
+      const chosenSize = product.tamanhos.includes(size) ? size : firstAvailableSize(product)
+      const normalizedKey = buildCartItemKey(productId, chosenSize)
+      if (normalizedKey !== cartKey) {
+        const existing = appState.cart[normalizedKey] ?? 0
+        appState.cart[normalizedKey] = existing + qty
+        delete appState.cart[cartKey]
+      }
+      return { id: normalizedKey, product, size: chosenSize, qty, subtotal: qty * product.preco }
     })
-    .filter((x): x is { product: Product; qty: number; subtotal: number } => x !== null)
+    .filter(
+      (x): x is { id: string; product: Product; size: PieceSize; qty: number; subtotal: number } =>
+        x !== null
+    )
 }
 
 function cartTotal() {
@@ -1126,20 +1237,32 @@ function cartCount() {
   return cartItems().reduce((s, i) => s + i.qty, 0)
 }
 
+function cartButtonInnerHtml(): string {
+  const count = cartCount()
+  return `
+    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
+      viewBox="0 0 24 24"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+    Carrinho ${count > 0 ? `<span class="badge">${count}</span>` : ''}
+  `
+}
+
+function refreshCartIndicators() {
+  const goCartBtn = document.getElementById('go-cart')
+  if (goCartBtn) goCartBtn.innerHTML = cartButtonInnerHtml()
+  const floatingBadge = document.querySelector<HTMLElement>('.floating-cart-badge')
+  if (floatingBadge) floatingBadge.textContent = String(cartCount())
+}
+
 /** Ajusta quantidades do carrinho se o estoque do produto cair (ex.: painel admin). */
 function syncCartWithStock() {
   let changed = false
-  for (const id of Object.keys(appState.cart)) {
-    const qty = appState.cart[id] ?? 0
+  for (const key of Object.keys(appState.cart)) {
+    const qty = appState.cart[key] ?? 0
     if (qty <= 0) continue
-    const p = products.find((pr) => pr.id === id)
+    const parsed = parseCartItemKey(key)
+    const p = products.find((pr) => pr.id === parsed.productId)
     if (!p) continue
-    const cap = p.estoque
-    if (qty > cap) {
-      if (cap <= 0) delete appState.cart[id]
-      else appState.cart[id] = cap
-      changed = true
-    }
+    changed = enforceCartStockForProduct(parsed.productId, p.estoque) || changed
   }
   if (changed) persistState()
 }
@@ -1175,28 +1298,22 @@ function requestAdminAccess() {
   setStep('admin')
 }
 
-function registerAdminLogoTap(): boolean {
-  adminLogoTapCount += 1
-
-  if (adminLogoTapResetTimer) {
-    clearTimeout(adminLogoTapResetTimer)
-  }
-
-  adminLogoTapResetTimer = setTimeout(() => {
-    adminLogoTapCount = 0
-    adminLogoTapResetTimer = null
-  }, 1200)
-
-  if (adminLogoTapCount >= 5) {
-    adminLogoTapCount = 0
-    if (adminLogoTapResetTimer) {
-      clearTimeout(adminLogoTapResetTimer)
-      adminLogoTapResetTimer = null
+function registerAdminSecretTap(): boolean {
+  adminSecretTapCount += 1
+  if (adminSecretTapResetTimer) clearTimeout(adminSecretTapResetTimer)
+  adminSecretTapResetTimer = setTimeout(() => {
+    adminSecretTapCount = 0
+    adminSecretTapResetTimer = null
+  }, 1400)
+  if (adminSecretTapCount >= 7) {
+    adminSecretTapCount = 0
+    if (adminSecretTapResetTimer) {
+      clearTimeout(adminSecretTapResetTimer)
+      adminSecretTapResetTimer = null
     }
     requestAdminAccess()
     return true
   }
-
   return false
 }
 
@@ -1211,18 +1328,23 @@ function getBackStep(current: Step): Step | null {
   return map[current] ?? null
 }
 
-function updateQty(id: string, qty: number) {
-  const product = products.find((pr) => pr.id === id)
+function updateQty(id: string, qty: number, smoothUi = false) {
+  const parsed = parseCartItemKey(id)
+  const product = products.find((pr) => pr.id === parsed.productId)
   if (qty <= 0) {
     delete appState.cart[id]
   } else if (product) {
-    const cap = product.estoque
-    if (cap <= 0) {
+    const currentTotal = productQtyInCart(parsed.productId)
+    const currentLine = appState.cart[id] ?? 0
+    const nextTotal = currentTotal - currentLine + qty
+    if (product.estoque <= 0) {
       alert('Item sem estoque.')
       delete appState.cart[id]
-    } else if (qty > cap) {
-      alert(`Só há ${cap} unidade(s) disponível(is).`)
-      appState.cart[id] = cap
+    } else if (nextTotal > product.estoque) {
+      const allowedForLine = Math.max(0, product.estoque - (currentTotal - currentLine))
+      alert(`Só há ${product.estoque} unidade(s) disponível(is).`)
+      if (allowedForLine <= 0) delete appState.cart[id]
+      else appState.cart[id] = allowedForLine
     } else {
       appState.cart[id] = qty
     }
@@ -1230,6 +1352,11 @@ function updateQty(id: string, qty: number) {
     appState.cart[id] = qty
   }
   persistState()
+  if (smoothUi && appState.step === 'catalogo') {
+    refreshCatalogGrid()
+    refreshCartIndicators()
+    return
+  }
   render()
 }
 
@@ -1415,8 +1542,8 @@ function buildWhatsAppUrl(): string {
     `*Itens:*`
   ]
 
-  cartItems().forEach(({ product, qty, subtotal }) => {
-    lines.push(`• ${product.nome} × ${qty} = ${currency.format(subtotal)}`)
+  cartItems().forEach(({ product, size, qty, subtotal }) => {
+    lines.push(`• ${product.nome} (${cartItemSizeLabel(size)}) × ${qty} = ${currency.format(subtotal)}`)
   })
 
   const fee = checkoutDeliveryFeeTotal()
@@ -1466,13 +1593,14 @@ function catalogStockLabel(p: Product, qtyInCart: number): string {
   const e = p.estoque
   if (e <= 0) return 'Item sem estoque'
   if (qtyInCart > e) return `Só há ${e} unidade(s) disponível(is)`
+  if (qtyInCart >= e) return 'Quantidade máxima em estoque'
   return 'Item com estoque'
 }
 
 function catalogStockClass(p: Product, qtyInCart: number): string {
   const e = p.estoque
   if (e <= 0) return 'stock-out'
-  if (qtyInCart > e) return 'stock-warn'
+  if (qtyInCart >= e) return 'stock-warn'
   return 'stock-ok'
 }
 
@@ -1681,7 +1809,10 @@ function cadastroScreen() {
 }
 
 function catalogProductCardHtml(p: Product): string {
-  const qty = appState.cart[p.id] ?? 0
+  const remembered = normalizeSize(catalogSelectedSizes[p.id])
+  const selectedSize = remembered && p.tamanhos.includes(remembered) ? remembered : firstAvailableSize(p)
+  const qty = qtyInCartForProductSize(p.id, selectedSize)
+  const totalQty = productQtyInCart(p.id)
   const gallery = productGalleryUrls(p)
   const slides = gallery
     .map(
@@ -1694,9 +1825,12 @@ function catalogProductCardHtml(p: Product): string {
     p.subcategoria != null && String(p.subcategoria).trim()
       ? `<p class="chip">${escapeHtml(String(p.subcategoria).trim())}</p>`
       : ''
-  const stockCls = catalogStockClass(p, qty)
-  const stockLabel = escapeHtml(catalogStockLabel(p, qty))
-  const plusDisabled = p.estoque <= 0 || qty >= p.estoque
+  const stockCls = catalogStockClass(p, totalQty)
+  const stockLabel = escapeHtml(catalogStockLabel(p, totalQty))
+  const plusDisabled = p.estoque <= 0 || totalQty >= p.estoque
+  const sizeOptions = p.tamanhos
+    .map((size) => `<option value="${size}" ${size === selectedSize ? 'selected' : ''}>${size}</option>`)
+    .join('')
   return `
           <article class="product-card">
             <div class="product-img-wrap">
@@ -1715,6 +1849,12 @@ function catalogProductCardHtml(p: Product): string {
               <p class="muted small">${escapeHtml(p.marca)}</p>
               <p class="stock-msg ${stockCls}">${stockLabel}</p>
               <p class="muted uso-text">${escapeHtml(p.uso)}</p>
+              <label class="muted small">
+                Tamanho
+                <select data-action="size" data-id="${p.id}">
+                  ${sizeOptions}
+                </select>
+              </label>
               <button class="btn link-btn" data-action="open-tech" data-id="${p.id}">
                 Ver descrição
               </button>
@@ -1726,8 +1866,8 @@ function catalogProductCardHtml(p: Product): string {
                   <button class="qty-btn" data-action="plus" data-id="${p.id}" aria-label="Aumentar" ${plusDisabled ? 'disabled' : ''}>+</button>
                 </div>
               </div>
-              <button class="btn primary full-width mt4" data-action="open-cart" ${qty === 0 || p.estoque <= 0 ? 'disabled' : ''}>
-                ${p.estoque <= 0 ? 'Indisponível' : qty > 0 ? `Ir para carrinho (${qty})` : 'Selecione no + / -'}
+              <button class="btn primary full-width mt4" data-action="open-cart" ${totalQty === 0 || p.estoque <= 0 ? 'disabled' : ''}>
+                ${p.estoque <= 0 ? 'Indisponível' : totalQty > 0 ? `Ir para carrinho (${totalQty})` : 'Selecione tamanho e use + / -'}
               </button>
             </div>
           </article>`
@@ -1782,15 +1922,30 @@ function bindCatalogGridActions() {
 
   wrap.querySelectorAll<HTMLButtonElement>('[data-action="plus"]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const id = btn.dataset.id!
-      updateQty(id, (appState.cart[id] ?? 0) + 1)
+      const productId = btn.dataset.id!
+      const size = selectedSizeFromProductCard(productId)
+      const key = buildCartItemKey(productId, size)
+      updateQty(key, (appState.cart[key] ?? 0) + 1, true)
     })
   })
 
   wrap.querySelectorAll<HTMLButtonElement>('[data-action="minus"]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const id = btn.dataset.id!
-      updateQty(id, (appState.cart[id] ?? 0) - 1)
+      const productId = btn.dataset.id!
+      const size = selectedSizeFromProductCard(productId)
+      const key = buildCartItemKey(productId, size)
+      updateQty(key, (appState.cart[key] ?? 0) - 1, true)
+    })
+  })
+
+  wrap.querySelectorAll<HTMLSelectElement>('[data-action="size"]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const productId = sel.dataset.id ?? ''
+      if (productId) {
+        const parsed = normalizeSize(sel.value)
+        if (parsed) catalogSelectedSizes[productId] = parsed
+      }
+      refreshCatalogGrid()
     })
   })
 
@@ -1827,13 +1982,14 @@ function catalogoScreen() {
       <header class="toolbar card">
         <div class="toolbar-top">
           ${stepIndicator(2)}
-          <p class="eyebrow">Cliente: ${escapeHtml(appState.customer.nomeOficina || appState.customer.nomeCompleto)}</p>
+          <p class="eyebrow">Olá, seja bem vindo: ${escapeHtml(appState.customer.nomeCompleto)}</p>
           <h1>Catálogo</h1>
         </div>
         <div class="toolbar-actions">
           <button class="btn" id="back-register">← Voltar para cadastro</button>
           <input id="search" placeholder="Buscar por nome, marca ou categoria…"
             value="${appState.filtroBusca}" aria-label="Buscar produto" />
+          <button type="button" class="btn" id="run-search" aria-label="Buscar itens">Buscar</button>
           <select id="category-filter" aria-label="Filtrar por categoria">${optionsHtml}</select>
           <button class="btn primary cart-btn" id="go-cart">
             <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
@@ -1869,22 +2025,22 @@ function cartScreen() {
             </div>
             <div class="cart-item-text">
               <strong>${escapeHtml(item.product.nome)}</strong><br/>
-              <small class="muted">${escapeHtml(item.product.marca)}</small>
+              <small class="muted">${escapeHtml(item.product.marca)} · ${escapeHtml(cartItemSizeLabel(item.size))}</small>
             </div>
           </div>
         </td>
         <td data-label="Quantidade">
           <div class="qty-wrap inline">
-            <button class="qty-btn" data-action="minus" data-id="${item.product.id}" aria-label="Diminuir">−</button>
+            <button class="qty-btn" data-action="minus" data-id="${item.id}" aria-label="Diminuir">−</button>
             <span class="qty-value">${item.qty}</span>
-            <button class="qty-btn" data-action="plus" data-id="${item.product.id}" aria-label="Aumentar" ${item.qty >= item.product.estoque ? 'disabled' : ''}>+</button>
+            <button class="qty-btn" data-action="plus" data-id="${item.id}" aria-label="Aumentar" ${productQtyInCart(item.product.id) >= item.product.estoque ? 'disabled' : ''}>+</button>
           </div>
-          <p class="stock-msg ${catalogStockClass(item.product, item.qty)} small" style="margin-top:6px;">${escapeHtml(catalogStockLabel(item.product, item.qty))}</p>
+          <p class="stock-msg ${catalogStockClass(item.product, productQtyInCart(item.product.id))} small" style="margin-top:6px;">${escapeHtml(catalogStockLabel(item.product, productQtyInCart(item.product.id)))}</p>
         </td>
         <td data-label="Unitário">${currency.format(item.product.preco)}</td>
         <td data-label="Subtotal"><strong>${currency.format(item.subtotal)}</strong></td>
         <td data-label="Ações">
-          <button class="btn tiny danger" data-action="remove" data-id="${item.product.id}" aria-label="Remover item">✕</button>
+          <button class="btn tiny danger" data-action="remove" data-id="${item.id}" aria-label="Remover item">✕</button>
         </td>
       </tr>
     `
@@ -1892,7 +2048,7 @@ function cartScreen() {
     .join('')
 
   return `
-    <section class="screen card fade-in">
+    <section class="screen card">
       ${stepIndicator(3)}
       <div class="screen-header">
         <p class="eyebrow">Revisão do pedido</p>
@@ -1976,9 +2132,10 @@ function checkoutScreen() {
     checkoutOptions.paymentPixEnabled && appState.paymentMethod === 'pix' && pixKeyTrim.length > 0
   const showPixMissingHint =
     checkoutOptions.paymentPixEnabled && appState.paymentMethod === 'pix' && pixKeyTrim.length === 0
+  const showDeliveryAddressInput = getDeliveryOption(appState.deliveryMode)?.showCustomerAddress === true
 
   return `
-    <section class="screen card fade-in">
+    <section class="screen card">
       ${stepIndicator(4)}
       <div class="screen-header">
         <p class="eyebrow">Finalização</p>
@@ -1990,6 +2147,26 @@ function checkoutScreen() {
           <legend>Modalidade de recebimento</legend>
           ${deliveryBlock}
         </fieldset>
+
+        ${
+          showDeliveryAddressInput
+            ? `
+        <fieldset>
+          <legend>Endereço para entrega</legend>
+          <label>
+            Informe o endereço completo
+            <input
+              id="checkout-delivery-address"
+              type="text"
+              autocomplete="street-address"
+              placeholder="Rua, número, bairro, cidade e referência"
+              value="${escapeAttr(appState.customer.enderecoCompleto)}"
+            />
+          </label>
+        </fieldset>
+        `
+            : ''
+        }
 
         <fieldset>
           <legend>Forma de pagamento</legend>
@@ -2118,26 +2295,24 @@ function adminScreen() {
         <td data-label="Marca">${escapeHtml(p.marca)}</td>
         <td data-label="Categoria">${escapeHtml(p.categoria)}</td>
         <td data-label="Preço">
-          <input
-            class="price-edit-input"
-            type="number"
-            min="0"
-            step="0.01"
-            value="${p.preco.toFixed(2)}"
-            data-action="admin-price"
-            data-index="${i}"
-            aria-label="Preço de ${escapeAttr(p.nome)}"
-          />
+          <strong>${currency.format(p.preco)}</strong>
         </td>
         <td data-label="Estoque">
           <div class="admin-stock-row">
-            <button type="button" class="qty-btn" data-action="admin-stock-minus" data-index="${i}" aria-label="Diminuir estoque">−</button>
-            <span class="admin-stock-value">${p.estoque}</span>
-            <button type="button" class="qty-btn" data-action="admin-stock-plus" data-index="${i}" aria-label="Aumentar estoque">+</button>
+            <input
+              class="stock-edit-input"
+              type="number"
+              min="0"
+              step="1"
+              value="${Math.max(0, Math.floor(p.estoque))}"
+              data-action="admin-stock"
+              data-index="${i}"
+              aria-label="Estoque de ${escapeAttr(p.nome)}"
+            />
           </div>
         </td>
         <td data-label="Ações">
-          <button class="btn tiny" data-action="admin-save-price" data-index="${i}" aria-label="Salvar novo preço de ${escapeAttr(p.nome)}">Salvar</button>
+          <button class="btn tiny" data-action="admin-save-stock" data-index="${i}" aria-label="Salvar novo estoque de ${escapeAttr(p.nome)}">Salvar estoque</button>
           <button class="btn tiny danger" data-action="admin-delete" data-index="${i}" aria-label="Excluir ${escapeAttr(p.nome)}">✕</button>
         </td>
       </tr>
@@ -2243,10 +2418,6 @@ function adminScreen() {
             <span class="admin-descricao-counter muted small" id="admin-descricao-counter" aria-live="polite">${b.descricaoEmpresa.length} / 2000</span>
           </label>
           <label>
-            Ramo da empresa (opcional)
-            <input type="text" name="ramoEmpresa" value="${escapeAttr(b.ramoEmpresa)}" placeholder="Ex.: venda de roupas femininas" maxlength="200" />
-          </label>
-          <label>
             Telefone da empresa (opcional)
             <input type="tel" name="telefoneEmpresa" value="${escapeAttr(b.telefoneEmpresa)}" placeholder="Ex.: (00) 00000-0000" maxlength="30" autocomplete="tel" />
           </label>
@@ -2288,7 +2459,7 @@ function adminScreen() {
               min="0"
               step="0.01"
               inputmode="decimal"
-              placeholder="0,00"
+              placeholder="${DEFAULT_DELIVERY_FEE_REAIS.toFixed(2).replace('.', ',')}"
               value="${adminDeliveryFeeValue}"
             />
           </label>
@@ -2357,16 +2528,20 @@ function adminScreen() {
             <input required name="nome" placeholder="Ex.: Camiseta básica algodão" />
           </label>
           <label>
-            Marca ou coleção *
-            <input required name="marca" placeholder="Ex.: própria, marca parceira" />
+            Marca ou coleção (opcional)
+            <input name="marca" placeholder="Ex.: própria, marca parceira" />
           </label>
           <label>
             Categoria *
             <select required name="categoria">${optionsHtml}</select>
           </label>
           <label>
-            Detalhe (tamanho, cor…)
-            <input name="subcategoria" placeholder="Ex.: M · Branco" />
+            Tamanho (opcional)
+            <input name="tamanhoProduto" placeholder="Ex.: M" />
+          </label>
+          <label>
+            Cor (opcional)
+            <input name="corProduto" placeholder="Ex.: Branco" />
           </label>
           <label>
             Preço (R$) *
@@ -2403,7 +2578,7 @@ function adminScreen() {
             <input required name="uso" placeholder="Tecido, modelagem, cuidados na lavagem…" />
           </label>
           <div class="full form-actions">
-            <button type="submit" class="btn primary">Adicionar ao catálogo</button>
+            <button type="submit" class="btn primary">Salvar e adicionar ao catálogo</button>
           </div>
         </form>
       </div>
@@ -2539,6 +2714,12 @@ function bindEvents() {
         requestAdminAccess()
       }
     })
+    // Atalho secreto mobile: 7 toques rápidos no canto superior direito.
+    document.addEventListener('pointerdown', (e) => {
+      const nearTopRight = e.clientX >= window.innerWidth - 72 && e.clientY <= 72
+      if (!nearTopRight) return
+      registerAdminSecretTap()
+    })
     adminSecretBound = true
   }
 
@@ -2575,8 +2756,6 @@ function bindEvents() {
   document.getElementById('floating-cart')?.addEventListener('click', () => setStep('carrinho'))
   document.getElementById('go-home')?.addEventListener('click', (e) => {
     e.preventDefault()
-    const openedAdmin = registerAdminLogoTap()
-    if (openedAdmin) return
     if (appState.customer.nomeCompleto) setStep('catalogo')
     else setStep('cadastro')
   })
@@ -2711,6 +2890,12 @@ function bindEvents() {
     refreshCatalogGrid()
     persistState()
   })
+  document.getElementById('run-search')?.addEventListener('click', () => {
+    const search = document.getElementById('search') as HTMLInputElement | null
+    appState.filtroBusca = search?.value ?? ''
+    refreshCatalogGrid()
+    persistState()
+  })
   document.getElementById('category-filter')?.addEventListener('change', (e) => {
     appState.filtroCategoria = (e.target as HTMLSelectElement).value as 'todas' | Category
     refreshCatalogGrid()
@@ -2726,6 +2911,11 @@ function bindEvents() {
   const cashChangeInput = document.getElementById('cash-change-for') as HTMLInputElement | null
   cashChangeInput?.addEventListener('input', () => {
     appState.cashChangeFor = cashChangeInput.value
+    persistState()
+  })
+  const deliveryAddressInput = document.getElementById('checkout-delivery-address') as HTMLInputElement | null
+  deliveryAddressInput?.addEventListener('input', () => {
+    appState.customer.enderecoCompleto = deliveryAddressInput.value
     persistState()
   })
 
@@ -2771,6 +2961,16 @@ function bindEvents() {
       const selectedPayment = document.querySelector<HTMLInputElement>('input[name="paymentMethod"]:checked')
       appState.deliveryMode = clampDeliveryModeId(selected?.value)
       appState.paymentMethod = clampPaymentMethodId(selectedPayment?.value)
+      const selectedDelivery = getDeliveryOption(appState.deliveryMode)
+      if (selectedDelivery?.showCustomerAddress) {
+        const endereco = String(deliveryAddressInput?.value ?? appState.customer.enderecoCompleto).trim()
+        if (!endereco) {
+          alert('Informe o endereço para entrega.')
+          deliveryAddressInput?.focus()
+          return
+        }
+        appState.customer.enderecoCompleto = endereco
+      }
 
       const payOpt = getPaymentOption(appState.paymentMethod)
       if (payOpt?.asksCashChange && appState.cashChangeFor) {
@@ -2783,7 +2983,9 @@ function bindEvents() {
         }
       }
 
-      for (const { product, qty } of cartItems()) {
+      for (const product of products) {
+        const qty = productQtyInCart(product.id)
+        if (qty <= 0) continue
         if (qty > product.estoque) {
           alert(
             product.estoque <= 0
@@ -2803,7 +3005,7 @@ function bindEvents() {
         const numero = gerarNumeroPedido()
         const r = await storeApi.postPedidoJson({
           numero,
-          items: cartItems().map(({ product, qty }) => ({ productId: product.id, qty })),
+          items: cartItems().map(({ product, qty, size }) => ({ productId: product.id, qty, tamanho: size })),
           total: checkoutOrderTotal(),
           customer: appState.customer,
           deliveryMode: appState.deliveryMode,
@@ -2822,7 +3024,7 @@ function bindEvents() {
       }
 
       products = products.map((pr) => {
-        const q = appState.cart[pr.id]
+        const q = productQtyInCart(pr.id)
         if (!q || q <= 0) return pr
         return { ...pr, estoque: Math.max(0, pr.estoque - q) }
       })
@@ -2857,19 +3059,38 @@ function bindEvents() {
   document.querySelectorAll<HTMLButtonElement>('[data-action="plus"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.id!
-      updateQty(id, (appState.cart[id] ?? 0) + 1)
+      const parsed = parseCartItemKey(id)
+      const isCartKey = id.includes(CART_KEY_SEPARATOR)
+      const size = isCartKey ? parsed.size : selectedSizeFromProductCard(parsed.productId)
+      const key = buildCartItemKey(parsed.productId, size)
+      updateQty(key, (appState.cart[key] ?? 0) + 1, !isCartKey)
     })
   })
 
   document.querySelectorAll<HTMLButtonElement>('[data-action="minus"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.id!
-      updateQty(id, (appState.cart[id] ?? 0) - 1)
+      const parsed = parseCartItemKey(id)
+      const isCartKey = id.includes(CART_KEY_SEPARATOR)
+      const size = isCartKey ? parsed.size : selectedSizeFromProductCard(parsed.productId)
+      const key = buildCartItemKey(parsed.productId, size)
+      updateQty(key, (appState.cart[key] ?? 0) - 1, !isCartKey)
     })
   })
 
   document.querySelectorAll<HTMLButtonElement>('[data-action="remove"]').forEach((btn) => {
     btn.addEventListener('click', () => updateQty(btn.dataset.id!, 0))
+  })
+
+  document.querySelectorAll<HTMLSelectElement>('[data-action="size"]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const productId = sel.dataset.id ?? ''
+      if (productId) {
+        const parsed = normalizeSize(sel.value)
+        if (parsed) catalogSelectedSizes[productId] = parsed
+      }
+      render()
+    })
   })
 
   // Admin – identidade da loja
@@ -2903,12 +3124,13 @@ function bindEvents() {
       tagline,
       logoUrl,
       descricaoEmpresa: String(fd.get('descricaoEmpresa') ?? '').trim(),
-      ramoEmpresa: String(fd.get('ramoEmpresa') ?? '').trim(),
+      ramoEmpresa: '',
       enderecoEmpresa: String(fd.get('enderecoEmpresa') ?? '').trim(),
       telefoneEmpresa: String(fd.get('telefoneEmpresa') ?? '').trim()
     }
     saveBranding(storeBranding)
     applyDocumentBranding()
+    notifySalvoComSucesso()
     render()
   })
 
@@ -2960,6 +3182,7 @@ function bindEvents() {
     appState.deliveryMode = clampDeliveryModeId(appState.deliveryMode)
     appState.paymentMethod = clampPaymentMethodId(appState.paymentMethod)
     persistState()
+    notifySalvoComSucesso()
     render()
   })
 
@@ -3169,10 +3392,13 @@ function bindEvents() {
       const nome = get('nome')
       const marca = get('marca')
       const categoria = get('categoria') as Category
+      const tamanhoProduto = get('tamanhoProduto')
+      const corProduto = get('corProduto')
+      const subcategoria = [tamanhoProduto, corProduto].filter(Boolean).join(' · ')
       const preco = parseFloat(get('preco'))
       const uso = get('uso')
       const estoqueIni = Math.max(0, Math.floor(Number(get('estoque'))))
-      if (!nome || !marca || !categoria || isNaN(preco) || !uso) {
+      if (!nome || !categoria || isNaN(preco) || !uso) {
         alert('Preencha os campos obrigatórios do produto.')
         return
       }
@@ -3192,9 +3418,10 @@ function bindEvents() {
           nome,
           marca,
           categoria,
-          subcategoria: get('subcategoria') || undefined,
+          subcategoria: subcategoria || undefined,
           preco,
           imagens,
+          tamanhos: [...PIECE_SIZES],
           estoque: estoqueIni,
           uso,
           custom: true,
@@ -3205,6 +3432,7 @@ function bindEvents() {
           saveProducts(products)
           adminPendingImageDataUrls = []
           adminForm.reset()
+          notifySalvoComSucesso()
           render()
           return
         }
@@ -3216,9 +3444,10 @@ function bindEvents() {
         nome,
         marca,
         categoria,
-        subcategoria: get('subcategoria') || undefined,
+        subcategoria: subcategoria || undefined,
         preco,
         imagens,
+        tamanhos: [...PIECE_SIZES],
         estoque: estoqueIni,
         uso,
         custom: true,
@@ -3228,6 +3457,7 @@ function bindEvents() {
       saveProducts(products)
       adminPendingImageDataUrls = []
       adminForm.reset()
+      notifySalvoComSucesso()
       render()
     })()
   })
@@ -3250,48 +3480,24 @@ function bindEvents() {
     })
   })
 
-  // Admin – editar preço
-  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-save-price"]').forEach((btn) => {
+  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-save-stock"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const idx = Number(btn.dataset.index)
       void (async () => {
-        const input = document.querySelector<HTMLInputElement>(`[data-action="admin-price"][data-index="${idx}"]`)
-        const nextPrice = Number(input?.value)
-        if (!input || Number.isNaN(nextPrice) || nextPrice < 0) {
-          alert('Informe um preço válido para salvar.')
+        const input = document.querySelector<HTMLInputElement>(`[data-action="admin-stock"][data-index="${idx}"]`)
+        const cur = products[idx]
+        const next = Number(input?.value)
+        if (!cur || !input || Number.isNaN(next) || next < 0 || !Number.isInteger(next)) {
+          alert('Informe um estoque válido (número inteiro ≥ 0).')
           input?.focus()
           return
         }
-        const cur = products[idx]
-        if (cur && storeApi.isMongoObjectId(cur.id)) {
-          const r = await storeApi.patchProdutoJson(cur.id, { preco: nextPrice })
-          if (r.ok) {
-            products[idx] = normalizeProduct(r.data)
-            saveProducts(products)
-            render()
-            return
-          }
-          alert('API: ' + r.erro)
-        }
-        products[idx] = { ...products[idx], preco: nextPrice }
-        saveProducts(products)
-        render()
-      })()
-    })
-  })
-
-  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-stock-plus"]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const idx = Number(btn.dataset.index)
-      void (async () => {
-        const cur = products[idx]
-        if (!cur) return
-        const next = cur.estoque + 1
         if (storeApi.isMongoObjectId(cur.id)) {
           const r = await storeApi.patchProdutoJson(cur.id, { estoque: next })
           if (r.ok) {
             products[idx] = normalizeProduct(r.data)
             saveProducts(products)
+            notifySalvoComSucesso()
             render()
             return
           }
@@ -3299,30 +3505,7 @@ function bindEvents() {
         }
         products[idx] = { ...cur, estoque: next }
         saveProducts(products)
-        render()
-      })()
-    })
-  })
-
-  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-stock-minus"]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const idx = Number(btn.dataset.index)
-      void (async () => {
-        const cur = products[idx]
-        if (!cur) return
-        const next = Math.max(0, cur.estoque - 1)
-        if (storeApi.isMongoObjectId(cur.id)) {
-          const r = await storeApi.patchProdutoJson(cur.id, { estoque: next })
-          if (r.ok) {
-            products[idx] = normalizeProduct(r.data)
-            saveProducts(products)
-            render()
-            return
-          }
-          alert('API: ' + r.erro)
-        }
-        products[idx] = { ...cur, estoque: next }
-        saveProducts(products)
+        notifySalvoComSucesso()
         render()
       })()
     })

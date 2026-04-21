@@ -849,6 +849,14 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   font-weight: 700;
 }
 
+.stock-edit-input {
+  width: 90px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-weight: 700;
+}
+
 .success {
   border-color: #b8e4d2;
 }
@@ -1897,12 +1905,7 @@ body.cadastro-landing-active {
 .admin-stock-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-.admin-stock-value {
-  min-width: 28px;
-  text-align: center;
-  font-weight: 800;
+  gap: 0;
 }
 
 /* ─── Admin: identidade / logo da loja ───────────────────────────────────── */

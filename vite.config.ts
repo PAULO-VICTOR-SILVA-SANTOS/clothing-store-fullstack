@@ -2,6 +2,9 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   server: {
+    /** Evita no Windows `localhost` resolver para ::1 enquanto o Vite escuta só em IPv4. */
+    host: '127.0.0.1',
+    port: 5173,
     proxy: {
       '/produtos': {
         target: 'http://localhost:3000',
@@ -28,5 +31,9 @@ export default defineConfig({
         changeOrigin: true
       }
     }
-  }
+  },
+  preview: {
+    host: '127.0.0.1',
+    port: 4173,
+  },
 })
