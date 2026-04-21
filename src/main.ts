@@ -42,8 +42,9 @@ type Category =
   | 'Casacos e jaquetas'
   | 'Outros'
 
-type PieceSize = 'PP' | 'P' | 'M' | 'G' | 'GG'
-const PIECE_SIZES: PieceSize[] = ['PP', 'P', 'M', 'G', 'GG']
+type PieceSize = 'PP' | 'P' | 'M' | 'G' | 'GG' | '36' | '37' | '38' | '39' | '40' | '41' | '42' | '43' | '44' | '45'
+const APPAREL_SIZES: PieceSize[] = ['PP', 'P', 'M', 'G', 'GG']
+const SHOE_SIZES: PieceSize[] = ['36', '37', '38', '39', '40', '41', '42', '43', '44', '45']
 const DEFAULT_PIECE_SIZE: PieceSize = 'M'
 const CART_KEY_SEPARATOR = '::size::'
 
@@ -183,7 +184,7 @@ function seedModeloProducts(): Product[] {
       modelo: true
     }
   ]
-  return base.map((p) => ({ ...p, tamanhos: [...PIECE_SIZES] }))
+  return base.map((p) => ({ ...p, tamanhos: [...APPAREL_SIZES] }))
 }
 
 // ─── Persistência (LocalStorage) ─────────────────────────────────────────────
@@ -720,18 +721,41 @@ function normalizeCategory(raw: unknown): Category {
 function normalizeSize(raw: unknown): PieceSize | null {
   if (typeof raw !== 'string') return null
   const v = raw.trim().toUpperCase()
-  if (v === 'PP' || v === 'P' || v === 'M' || v === 'G' || v === 'GG') return v
+  if (
+    v === 'PP' ||
+    v === 'P' ||
+    v === 'M' ||
+    v === 'G' ||
+    v === 'GG' ||
+    v === '36' ||
+    v === '37' ||
+    v === '38' ||
+    v === '39' ||
+    v === '40' ||
+    v === '41' ||
+    v === '42' ||
+    v === '43' ||
+    v === '44' ||
+    v === '45'
+  ) {
+    return v
+  }
   return null
 }
 
-function normalizeProductSizes(raw: unknown): PieceSize[] {
-  if (!Array.isArray(raw)) return [...PIECE_SIZES]
+function productSizesForCategory(category: Category): PieceSize[] {
+  return category === 'Calçados' ? [...SHOE_SIZES] : [...APPAREL_SIZES]
+}
+
+function normalizeProductSizes(raw: unknown, category: Category): PieceSize[] {
+  const allowed = productSizesForCategory(category)
+  if (!Array.isArray(raw)) return allowed
   const set = new Set<PieceSize>()
   for (const item of raw) {
     const size = normalizeSize(item)
-    if (size) set.add(size)
+    if (size && allowed.includes(size)) set.add(size)
   }
-  return set.size > 0 ? PIECE_SIZES.filter((size) => set.has(size)) : [...PIECE_SIZES]
+  return set.size > 0 ? allowed.filter((size) => set.has(size)) : allowed
 }
 
 function normalizeProduct(raw: unknown): Product {
@@ -763,7 +787,7 @@ function normalizeProduct(raw: unknown): Product {
     imagens,
     estoque,
     uso: String(p.uso ?? ''),
-    tamanhos: normalizeProductSizes(p.tamanhos),
+    tamanhos: normalizeProductSizes(p.tamanhos, normalizeCategory(p.categoria)),
     custom: p.custom === true,
     modelo: (p as Partial<Product>).modelo === true
   }
@@ -911,7 +935,15 @@ const emptyCustomer = (): Customer => ({
   whatsapp: ''
 })
 
-const savedCust = saved.customer as Partial<Customer> | undefined
+const savedStep = normalizePersistedStep(saved.step)
+const pedidoNumeroInit = typeof saved.pedidoNumero === 'string' ? saved.pedidoNumero : ''
+/**
+ * Se já existe pedido finalizado salvo no estado persistido, na próxima abertura
+ * começamos um novo fluxo (cadastro + carrinho vazios).
+ */
+const shouldStartFreshAfterCompletedOrder = Boolean(pedidoNumeroInit.trim()) && savedStep === 'concluido'
+
+const savedCust = shouldStartFreshAfterCompletedOrder ? undefined : (saved.customer as Partial<Customer> | undefined)
 const customerMerged: Customer = {
   ...emptyCustomer(),
   ...(savedCust ?? {}),
@@ -919,22 +951,29 @@ const customerMerged: Customer = {
 }
 
 const cartMerged: Record<string, number> =
-  saved.cart && typeof saved.cart === 'object' && !Array.isArray(saved.cart)
+  !shouldStartFreshAfterCompletedOrder &&
+  saved.cart &&
+  typeof saved.cart === 'object' &&
+  !Array.isArray(saved.cart)
     ? { ...(saved.cart as Record<string, number>) }
     : {}
 
 const hasName = Boolean(customerMerged.nomeCompleto.trim())
-const savedStep = normalizePersistedStep(saved.step)
 const savedPrev = normalizePersistedStep(saved.prevStep)
 let initialStep: Step =
-  savedStep !== undefined ? savedStep : hasName ? 'catalogo' : 'cadastro'
+  shouldStartFreshAfterCompletedOrder
+    ? 'cadastro'
+    : savedStep !== undefined
+      ? savedStep
+      : hasName
+        ? 'catalogo'
+        : 'cadastro'
 let initialPrev: Step = savedPrev !== undefined ? savedPrev : 'catalogo'
 
 const deliveryModeInit = clampDeliveryModeId(saved.deliveryMode)
 const paymentMethodInit = clampPaymentMethodId(saved.paymentMethod)
 const filtroBuscaInit = typeof saved.filtroBusca === 'string' ? saved.filtroBusca : ''
 const filtroCategoriaInit = normalizeFiltroCatPersist(saved.filtroCategoria)
-const pedidoNumeroInit = typeof saved.pedidoNumero === 'string' ? saved.pedidoNumero : ''
 const fichaTecnicaIdInit =
   saved.fichaTecnicaId === null || typeof saved.fichaTecnicaId === 'string'
     ? (saved.fichaTecnicaId ?? null)
@@ -1094,6 +1133,8 @@ const ADMIN_PIN = '1323' // troque por um PIN privado
 
 /** Fotos escolhidas antes de salvar o produto (data URLs). Limpa ao sair do admin. */
 let adminPendingImageDataUrls: string[] = []
+let adminEditingProductId: string | null = null
+let imageViewerState: { productId: string; index: number } | null = null
 
 /** Logo da loja escolhida em arquivo — aplicada ao salvar identidade. Limpa ao sair do admin. */
 let brandingPendingLogoDataUrl: string | null = null
@@ -1102,6 +1143,7 @@ let adminSecretBound = false
 let adminSecretTapCount = 0
 let adminSecretTapResetTimer: ReturnType<typeof setTimeout> | null = null
 const catalogSelectedSizes: Record<string, PieceSize> = {}
+const catalogImageIndexByProduct: Record<string, number> = {}
 
 function notifySalvoComSucesso(): void {
   alert('Salvo com sucesso.')
@@ -1278,6 +1320,7 @@ function setStep(step: Step) {
   }
   if (step !== 'admin') {
     adminPendingImageDataUrls = []
+    adminEditingProductId = null
     brandingPendingLogoDataUrl = null
   }
   appState.prevStep = appState.step
@@ -1578,6 +1621,18 @@ function productImageUrl(imagem: string): string {
   return u || 'https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'
 }
 
+function normalizeHttpImageUrl(raw: string): string | null {
+  const value = String(raw ?? '').trim()
+  if (!value) return null
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString()
+  } catch {
+    /* URL inválida */
+  }
+  return null
+}
+
 function productPrimaryImage(p: Product): string {
   const first = p.imagens.find((u) => u.trim())
   return first ? first.trim() : ''
@@ -1814,13 +1869,9 @@ function catalogProductCardHtml(p: Product): string {
   const qty = qtyInCartForProductSize(p.id, selectedSize)
   const totalQty = productQtyInCart(p.id)
   const gallery = productGalleryUrls(p)
-  const slides = gallery
-    .map(
-      (src, i) =>
-        `<img class="product-carousel-slide" src="${escapeAttr(src)}" alt="${escapeHtml(p.nome)}" loading="${i === 0 ? 'eager' : 'lazy'}"
-                onerror="this.src='https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'" />`
-    )
-    .join('')
+  const currentImageIndexRaw = catalogImageIndexByProduct[p.id] ?? 0
+  const currentImageIndex = Math.max(0, Math.min(gallery.length - 1, currentImageIndexRaw))
+  const currentImage = gallery[currentImageIndex] ?? productImageUrl('')
   const chipLine =
     p.subcategoria != null && String(p.subcategoria).trim()
       ? `<p class="chip">${escapeHtml(String(p.subcategoria).trim())}</p>`
@@ -1834,12 +1885,31 @@ function catalogProductCardHtml(p: Product): string {
   return `
           <article class="product-card">
             <div class="product-img-wrap">
-              <div class="product-img-scroll" role="group" aria-label="Fotos do produto">${slides}</div>
+              <img
+                class="product-carousel-slide"
+                role="button"
+                tabindex="0"
+                data-action="open-image"
+                data-id="${p.id}"
+                data-index="${currentImageIndex}"
+                src="${escapeAttr(currentImage)}"
+                alt="${escapeHtml(p.nome)}"
+                loading="eager"
+                onerror="this.src='https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'"
+              />
+              ${
+                gallery.length > 1
+                  ? `
+                <button type="button" class="product-carousel-nav prev" data-action="prev-image" data-id="${p.id}" aria-label="Foto anterior">‹</button>
+                <button type="button" class="product-carousel-nav next" data-action="next-image" data-id="${p.id}" aria-label="Próxima foto">›</button>
+              `
+                  : ''
+              }
               ${p.custom ? '<span class="badge-custom">Personalizado</span>' : ''}
               ${p.modelo ? '<span class="badge-modelo">Exemplo</span>' : ''}
               ${
                 gallery.length > 1
-                  ? `<span class="product-carousel-hint muted small">Deslize para ver mais fotos</span>`
+                  ? `<span class="product-carousel-hint muted small">Use ‹ e › para ver mais fotos</span>`
                   : ''
               }
             </div>
@@ -1958,6 +2028,60 @@ function bindCatalogGridActions() {
       appState.fichaTecnicaId = btn.dataset.id ?? null
       render()
     })
+  })
+
+  const changeCatalogImageByDirection = (productId: string, direction: 1 | -1) => {
+    const p = products.find((x) => x.id === productId)
+    if (!p) return
+    const total = productGalleryUrls(p).length
+    if (total <= 1) return
+    const current = catalogImageIndexByProduct[productId] ?? 0
+    const nextRaw = current + direction
+    const next = nextRaw < 0 ? total - 1 : nextRaw >= total ? 0 : nextRaw
+    catalogImageIndexByProduct[productId] = next
+    refreshCatalogGrid()
+  }
+
+  wrap.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    const prevBtn = target.closest<HTMLButtonElement>('[data-action="prev-image"]')
+    if (prevBtn) {
+      e.preventDefault()
+      const productId = prevBtn.dataset.id ?? ''
+      if (productId) changeCatalogImageByDirection(productId, -1)
+      return
+    }
+    const nextBtn = target.closest<HTMLButtonElement>('[data-action="next-image"]')
+    if (nextBtn) {
+      e.preventDefault()
+      const productId = nextBtn.dataset.id ?? ''
+      if (productId) changeCatalogImageByDirection(productId, 1)
+      return
+    }
+    const img = target.closest<HTMLElement>('img[data-action="open-image"]')
+    if (img) {
+      e.preventDefault()
+      const productId = img.dataset.id ?? ''
+      const idx = Math.max(0, Number(img.dataset.index ?? '0') || 0)
+      if (!productId) return
+      imageViewerState = { productId, index: idx }
+      render()
+    }
+  })
+
+  wrap.addEventListener('keydown', (evt) => {
+    const e = evt as KeyboardEvent
+    const target = e.target as HTMLElement
+    const img = target.closest<HTMLElement>('img[data-action="open-image"]')
+    if (!img) return
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      const productId = img.dataset.id ?? ''
+      const idx = Math.max(0, Number(img.dataset.index ?? '0') || 0)
+      if (!productId) return
+      imageViewerState = { productId, index: idx }
+      render()
+    }
   })
 }
 
@@ -2275,6 +2399,13 @@ function successScreen() {
 // ─── Painel Admin ─────────────────────────────────────────────────────────────
 
 function adminScreen() {
+  const editingProduct = adminEditingProductId
+    ? products.find((p) => p.id === adminEditingProductId) ?? null
+    : null
+  const editParts = editingProduct?.subcategoria ? String(editingProduct.subcategoria).split(' · ') : []
+  const editSize = editParts[0] ?? ''
+  const editColor = editParts[1] ?? ''
+
   const rows = products
     .map(
       (p, i) => `
@@ -2312,6 +2443,7 @@ function adminScreen() {
           </div>
         </td>
         <td data-label="Ações">
+          <button class="btn tiny" data-action="admin-edit" data-index="${i}" aria-label="Editar cadastro de ${escapeAttr(p.nome)}">Editar cadastro</button>
           <button class="btn tiny" data-action="admin-save-stock" data-index="${i}" aria-label="Salvar novo estoque de ${escapeAttr(p.nome)}">Salvar estoque</button>
           <button class="btn tiny danger" data-action="admin-delete" data-index="${i}" aria-label="Excluir ${escapeAttr(p.nome)}">✕</button>
         </td>
@@ -2321,7 +2453,7 @@ function adminScreen() {
     .join('')
 
   const optionsHtml = (categories.filter((c) => c !== 'todas') as Category[])
-    .map((c) => `<option value="${c}">${c}</option>`)
+    .map((c) => `<option value="${c}" ${editingProduct?.categoria === c ? 'selected' : ''}>${c}</option>`)
     .join('')
 
   const b = storeBranding
@@ -2510,49 +2642,76 @@ function adminScreen() {
             <p class="muted small admin-pedido-wa-hint">
               Texto de ajuda: em branco, o botão “Enviar pedido pelo WhatsApp” não aparece na confirmação. Preencha no formato <strong>(00) 00000-0000</strong> ou com código do país + DDD + número; quem finaliza o pedido envia a mensagem para esse WhatsApp.
             </p>
-            <button type="button" class="btn tiny danger" id="co-pedido-whatsapp-clear">Limpar número cadastrado</button>
+            <button type="button" class="btn tiny danger admin-wa-clear-btn" id="co-pedido-whatsapp-clear">Limpar número cadastrado</button>
           </div>
         </div>
 
-        <div class="actions" style="flex-wrap: wrap; gap: 10px;">
+        <div class="actions admin-checkout-actions">
           <button type="button" class="btn primary" id="co-save">Salvar entrega e pagamento</button>
           <button type="button" class="btn" id="co-reset-default">Limpar todas as opções</button>
         </div>
       </div>
 
       <div class="card">
-        <h2>Adicionar produto</h2>
+        <h2>${editingProduct ? `Editar cadastro: ${escapeHtml(editingProduct.nome)}` : 'Adicionar produto'}</h2>
         <form id="admin-form" class="form-grid" novalidate>
           <label>
             Nome da peça *
-            <input required name="nome" placeholder="Ex.: Camiseta básica algodão" />
+            <input required name="nome" placeholder="Ex.: Camiseta básica algodão" value="${escapeAttr(editingProduct?.nome ?? '')}" />
           </label>
           <label>
             Marca ou coleção (opcional)
-            <input name="marca" placeholder="Ex.: própria, marca parceira" />
+            <input name="marca" placeholder="Ex.: própria, marca parceira" value="${escapeAttr(editingProduct?.marca ?? '')}" />
           </label>
           <label>
             Categoria *
-            <select required name="categoria">${optionsHtml}</select>
+            <select required name="categoria" id="admin-categoria-produto">${optionsHtml}</select>
+            <small class="muted">Se selecionar <strong>Calçados</strong>, os tamanhos do produto serão de 36 a 45.</small>
           </label>
-          <label>
+          <label id="admin-tamanho-texto-wrap" class="admin-size-text-field">
             Tamanho (opcional)
-            <input name="tamanhoProduto" placeholder="Ex.: M" />
+            <select name="tamanhoProduto" id="admin-tamanho-texto">
+              <option value="">Selecione (opcional)</option>
+              ${APPAREL_SIZES.map((size) => `<option value="${size}" ${editSize === size ? 'selected' : ''}>${size}</option>`).join('')}
+            </select>
+          </label>
+          <label id="admin-tamanho-calcado-wrap" class="admin-size-shoe-field" hidden>
+            Número do calçado *
+            <select name="tamanhoCalcado" id="admin-tamanho-calcado">
+              ${SHOE_SIZES.map((size) => `<option value="${size}" ${editSize === size ? 'selected' : ''}>${size}</option>`).join('')}
+            </select>
           </label>
           <label>
             Cor (opcional)
-            <input name="corProduto" placeholder="Ex.: Branco" />
+            <input name="corProduto" placeholder="Ex.: Branco" value="${escapeAttr(editColor)}" />
           </label>
           <label>
             Preço (R$) *
-            <input required type="number" min="0" step="0.01" name="preco" placeholder="0,00" />
+            <input required type="number" min="0" step="0.01" name="preco" placeholder="0,00" value="${editingProduct ? String(editingProduct.preco) : ''}" />
           </label>
           <label>
             Estoque inicial *
-            <input required type="number" min="0" step="1" name="estoque" value="0" placeholder="0" />
+            <input required type="number" min="0" step="1" name="estoque" value="${editingProduct ? String(Math.max(0, Math.floor(editingProduct.estoque))) : '0'}" placeholder="0" />
           </label>
+          <label class="full">
+            URL da imagem (opcional)
+            <input
+              type="url"
+              name="imagemUrl"
+              placeholder="https://site.com/minha-imagem.jpg"
+              inputmode="url"
+              autocomplete="off"
+            />
+          </label>
+          <div class="full">
+            <button type="button" class="btn tiny" id="admin-add-url-image">Adicionar outra imagem (URL)</button>
+          </div>
+          <div class="full admin-url-preview-wrap" id="admin-url-preview-wrap">
+            <p class="muted small" id="admin-url-preview-hint">Pré-visualização da URL da imagem.</p>
+            <img id="admin-url-preview-img" class="admin-url-preview-img" alt="Pré-visualização da imagem por URL" hidden />
+          </div>
           <div class="full admin-photo-block">
-            <p class="muted small" style="margin-bottom: 8px;">Fotos da peça (até ${MAX_PRODUCT_IMAGES}) — frente, costas, lateral… Com API no ar, as imagens podem ir para o servidor ou para o <strong>Cloudinary</strong> (se <code>CLOUDINARY_URL</code> estiver no .env da API); senão, ficam em base64 no navegador.</p>
+            <p class="muted small" style="margin-bottom: 8px;">Fotos da peça (até ${MAX_PRODUCT_IMAGES}) — frente, costas, lateral…</p>
             <div class="admin-photo-actions">
               <button type="button" class="btn" id="admin-pick-gallery">📁 Galeria ou arquivo</button>
               <button type="button" class="btn" id="admin-pick-camera">📷 Tirar foto</button>
@@ -2575,10 +2734,11 @@ function adminScreen() {
           </div>
           <label class="full">
             Descrição *
-            <input required name="uso" placeholder="Tecido, modelagem, cuidados na lavagem…" />
+            <input required name="uso" placeholder="Tecido, modelagem, cuidados na lavagem…" value="${escapeAttr(editingProduct?.uso ?? '')}" />
           </label>
           <div class="full form-actions">
-            <button type="submit" class="btn primary">Salvar e adicionar ao catálogo</button>
+            <button type="submit" class="btn primary">${editingProduct ? 'Salvar alterações do item' : 'Salvar e adicionar ao catálogo'}</button>
+            ${editingProduct ? '<button type="button" class="btn" id="admin-cancel-edit">Cancelar edição</button>' : ''}
           </div>
         </form>
       </div>
@@ -2660,6 +2820,58 @@ function template() {
       </div>
     `
     : ''
+  const currentViewer = imageViewerState
+  const imageViewerProduct = currentViewer
+    ? products.find((p) => p.id === currentViewer.productId) ?? null
+    : null
+  const imageViewerGallery = imageViewerProduct ? productGalleryUrls(imageViewerProduct) : []
+  const imageViewerIndex =
+    currentViewer && imageViewerGallery.length
+      ? Math.max(0, Math.min(imageViewerGallery.length - 1, currentViewer.index))
+      : 0
+  const imageViewerModal =
+    imageViewerProduct && imageViewerGallery.length
+      ? `
+      <div class="image-viewer-overlay" id="image-viewer-overlay" role="dialog" aria-modal="true" aria-label="Visualização da imagem do produto">
+        <div class="image-viewer-modal">
+          <button class="btn image-viewer-close" id="image-viewer-close" aria-label="Fechar visualização">✕</button>
+          ${
+            imageViewerGallery.length > 1
+              ? `<button class="image-viewer-nav prev" id="image-viewer-prev" aria-label="Imagem anterior">‹</button>
+                 <button class="image-viewer-nav next" id="image-viewer-next" aria-label="Próxima imagem">›</button>`
+              : ''
+          }
+          <img
+            class="image-viewer-img"
+            src="${escapeAttr(imageViewerGallery[imageViewerIndex])}"
+            alt="${escapeAttr(imageViewerProduct.nome)}"
+            loading="eager"
+            onerror="this.src='https://placehold.co/900x700/e8f0fe/1a3a6b?text=Foto'"
+          />
+          ${
+            imageViewerGallery.length > 1
+              ? `<div class="image-viewer-thumbs">
+                  ${imageViewerGallery
+                    .map(
+                      (src, idx) => `<button
+                        type="button"
+                        class="image-viewer-thumb ${idx === imageViewerIndex ? 'active' : ''}"
+                        data-action="image-viewer-thumb"
+                        data-index="${idx}"
+                        aria-label="Abrir imagem ${idx + 1}"
+                      ><img src="${escapeAttr(src)}" alt="" loading="lazy" onerror="this.src='https://placehold.co/120x120/e8f0fe/1a3a6b?text=Foto'" /></button>`
+                    )
+                    .join('')}
+                </div>`
+              : ''
+          }
+          <p class="muted small image-viewer-caption">${escapeHtml(imageViewerProduct.nome)}${
+            imageViewerGallery.length > 1 ? ` • ${imageViewerIndex + 1}/${imageViewerGallery.length}` : ''
+          }</p>
+        </div>
+      </div>
+    `
+      : ''
   const screens: Record<Step, string> = {
     cadastro: cadastroScreen(),
     catalogo: catalogoScreen(),
@@ -2698,6 +2910,7 @@ function template() {
       ` : ''}
       ${screens[appState.step]}
       ${fichaModal}
+      ${imageViewerModal}
     </div>
   `
 }
@@ -2742,6 +2955,40 @@ function bindEvents() {
       persistState()
       render()
     }
+  })
+
+  document.getElementById('image-viewer-close')?.addEventListener('click', () => {
+    imageViewerState = null
+    render()
+  })
+  document.getElementById('image-viewer-overlay')?.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) {
+      imageViewerState = null
+      render()
+    }
+  })
+  const moveImageViewer = (dir: 1 | -1) => {
+    const viewer = imageViewerState
+    if (!viewer) return
+    const p = products.find((x) => x.id === viewer.productId)
+    if (!p) return
+    const total = productGalleryUrls(p).length
+    if (total <= 1) return
+    const nextRaw = viewer.index + dir
+    const next = nextRaw < 0 ? total - 1 : nextRaw >= total ? 0 : nextRaw
+    imageViewerState = { ...viewer, index: next }
+    render()
+  }
+  document.getElementById('image-viewer-prev')?.addEventListener('click', () => moveImageViewer(-1))
+  document.getElementById('image-viewer-next')?.addEventListener('click', () => moveImageViewer(1))
+  document.querySelectorAll<HTMLButtonElement>('[data-action="image-viewer-thumb"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const viewer = imageViewerState
+      if (!viewer) return
+      const idx = Math.max(0, Number(btn.dataset.index ?? '0') || 0)
+      imageViewerState = { ...viewer, index: idx }
+      render()
+    })
   })
 
   // Topbar
@@ -3384,6 +3631,106 @@ function bindEvents() {
 
   // Admin – adicionar produto
   const adminForm = document.getElementById('admin-form') as HTMLFormElement | null
+  const adminCategorySelect = adminForm?.querySelector<HTMLSelectElement>('select[name="categoria"]') ?? null
+  const adminTextSizeWrap = document.getElementById('admin-tamanho-texto-wrap') as HTMLLabelElement | null
+  const adminTextSizeInput = adminForm?.querySelector<HTMLInputElement>('input[name="tamanhoProduto"]') ?? null
+  const adminShoeSizeWrap = document.getElementById('admin-tamanho-calcado-wrap') as HTMLLabelElement | null
+  const adminShoeSizeSelect = adminForm?.querySelector<HTMLSelectElement>('select[name="tamanhoCalcado"]') ?? null
+  const adminImageUrlInput = adminForm?.querySelector<HTMLInputElement>('input[name="imagemUrl"]') ?? null
+  const adminUrlPreviewHint = document.getElementById('admin-url-preview-hint')
+  const adminUrlPreviewImg = document.getElementById('admin-url-preview-img') as HTMLImageElement | null
+  const adminAddUrlImageBtn = document.getElementById('admin-add-url-image') as HTMLButtonElement | null
+
+  const syncAdminSizeFieldsByCategory = () => {
+    const categoryValue = String(adminCategorySelect?.value ?? '')
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+    const isShoes = categoryValue === 'calcados'
+    if (!adminTextSizeWrap || !adminTextSizeInput || !adminShoeSizeWrap || !adminShoeSizeSelect) return
+    adminShoeSizeWrap.hidden = !isShoes
+    adminTextSizeWrap.hidden = Boolean(isShoes)
+    adminShoeSizeWrap.style.display = isShoes ? '' : 'none'
+    adminTextSizeWrap.style.display = isShoes ? 'none' : ''
+    adminShoeSizeSelect.required = Boolean(isShoes)
+    adminTextSizeInput.required = false
+    if (isShoes) {
+      adminTextSizeInput.value = ''
+    }
+  }
+
+  adminCategorySelect?.addEventListener('change', syncAdminSizeFieldsByCategory)
+  adminCategorySelect?.addEventListener('input', syncAdminSizeFieldsByCategory)
+  adminForm?.addEventListener('input', syncAdminSizeFieldsByCategory)
+  adminForm?.addEventListener('change', syncAdminSizeFieldsByCategory)
+  syncAdminSizeFieldsByCategory()
+  window.setTimeout(syncAdminSizeFieldsByCategory, 0)
+
+  const syncAdminImageUrlPreview = () => {
+    if (!adminImageUrlInput || !adminUrlPreviewHint || !adminUrlPreviewImg) return
+    const raw = adminImageUrlInput.value.trim()
+    if (!raw) {
+      adminUrlPreviewImg.hidden = true
+      adminUrlPreviewImg.removeAttribute('src')
+      adminUrlPreviewHint.textContent = 'Pré-visualização da URL da imagem.'
+      return
+    }
+    let normalizedUrl = ''
+    try {
+      const parsed = new URL(raw)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        normalizedUrl = parsed.toString()
+      }
+    } catch (_) {
+      normalizedUrl = ''
+    }
+    if (!normalizedUrl) {
+      adminUrlPreviewImg.hidden = true
+      adminUrlPreviewImg.removeAttribute('src')
+      adminUrlPreviewHint.textContent = 'URL inválida. Use um endereço completo começando com http:// ou https://.'
+      return
+    }
+    adminUrlPreviewHint.textContent = 'Carregando pré-visualização...'
+    adminUrlPreviewImg.hidden = false
+    adminUrlPreviewImg.src = normalizedUrl
+  }
+
+  adminImageUrlInput?.addEventListener('input', syncAdminImageUrlPreview)
+  adminImageUrlInput?.addEventListener('change', syncAdminImageUrlPreview)
+  adminImageUrlInput?.addEventListener('blur', syncAdminImageUrlPreview)
+  adminUrlPreviewImg?.addEventListener('load', () => {
+    if (!adminUrlPreviewHint) return
+    adminUrlPreviewHint.textContent = 'Imagem carregada com sucesso.'
+  })
+  adminUrlPreviewImg?.addEventListener('error', () => {
+    if (!adminUrlPreviewHint || !adminUrlPreviewImg) return
+    adminUrlPreviewImg.hidden = true
+    adminUrlPreviewHint.textContent = 'Não foi possível carregar a imagem dessa URL.'
+  })
+  adminAddUrlImageBtn?.addEventListener('click', () => {
+    if (!adminImageUrlInput) return
+    const normalizedUrl = normalizeHttpImageUrl(adminImageUrlInput.value)
+    if (!normalizedUrl) {
+      alert('Informe uma URL válida de imagem (http:// ou https://).')
+      adminImageUrlInput.focus()
+      return
+    }
+    if (adminPendingImageDataUrls.includes(normalizedUrl)) {
+      alert('Essa imagem já foi adicionada.')
+      return
+    }
+    if (adminPendingImageDataUrls.length >= MAX_PRODUCT_IMAGES) {
+      alert(`Limite de ${MAX_PRODUCT_IMAGES} fotos por produto.`)
+      return
+    }
+    adminPendingImageDataUrls = [normalizedUrl, ...adminPendingImageDataUrls].slice(0, MAX_PRODUCT_IMAGES)
+    adminImageUrlInput.value = ''
+    syncAdminImageUrlPreview()
+    render()
+  })
+  syncAdminImageUrlPreview()
+
   adminForm?.addEventListener('submit', (e) => {
     e.preventDefault()
     void (async () => {
@@ -3392,12 +3739,14 @@ function bindEvents() {
       const nome = get('nome')
       const marca = get('marca')
       const categoria = get('categoria') as Category
-      const tamanhoProduto = get('tamanhoProduto')
+      const tamanhoProduto = categoria === 'Calçados' ? get('tamanhoCalcado') : get('tamanhoProduto')
       const corProduto = get('corProduto')
       const subcategoria = [tamanhoProduto, corProduto].filter(Boolean).join(' · ')
+      const tamanhosCategoria = productSizesForCategory(categoria)
       const preco = parseFloat(get('preco'))
       const uso = get('uso')
       const estoqueIni = Math.max(0, Math.floor(Number(get('estoque'))))
+      const imagemUrl = get('imagemUrl')
       if (!nome || !categoria || isNaN(preco) || !uso) {
         alert('Preencha os campos obrigatórios do produto.')
         return
@@ -3406,14 +3755,58 @@ function bindEvents() {
         alert('Informe o estoque inicial (número inteiro ≥ 0).')
         return
       }
-      const imagens =
+      const imagensFromUpload =
         adminPendingImageDataUrls.length > 0
           ? [...adminPendingImageDataUrls].slice(0, MAX_PRODUCT_IMAGES)
-          : ['https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto']
+          : []
+      const imagens: string[] = [...imagensFromUpload]
+      if (imagemUrl) {
+        const normalizedUrl = normalizeHttpImageUrl(imagemUrl) ?? ''
+        if (!normalizedUrl) {
+          alert('A URL da imagem é inválida. Use um endereço completo começando com http:// ou https://')
+          return
+        }
+        if (!imagens.includes(normalizedUrl)) {
+          imagens.unshift(normalizedUrl)
+        }
+      }
+      if (imagens.length === 0) {
+        imagens.push('https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto')
+      }
+
+      const editingIndex = adminEditingProductId
+        ? products.findIndex((p) => p.id === adminEditingProductId)
+        : -1
+      const editingProduct = editingIndex >= 0 ? products[editingIndex] : null
 
       const useApi =
         import.meta.env.DEV || import.meta.env.VITE_SYNC_PRODUCTS_FROM_API === 'true'
-      if (useApi) {
+      if (editingProduct && useApi && storeApi.isMongoObjectId(editingProduct.id)) {
+        const r = await storeApi.patchProdutoJson(editingProduct.id, {
+          nome,
+          marca,
+          categoria,
+          subcategoria: subcategoria || undefined,
+          preco,
+          imagens,
+          tamanhos: tamanhosCategoria,
+          estoque: estoqueIni,
+          uso,
+          custom: editingProduct.custom === true,
+          modelo: editingProduct.modelo === true
+        })
+        if (r.ok) {
+          products = products.map((p, i) => (i === editingIndex ? normalizeProduct(r.data) : p))
+          saveProducts(products)
+          adminEditingProductId = null
+          adminPendingImageDataUrls = []
+          adminForm.reset()
+          notifySalvoComSucesso()
+          render()
+          return
+        }
+        alert('API: não foi possível atualizar o produto (' + r.erro + '). Salvando só no navegador.')
+      } else if (!editingProduct && useApi) {
         const r = await storeApi.postProdutoJson({
           nome,
           marca,
@@ -3421,7 +3814,7 @@ function bindEvents() {
           subcategoria: subcategoria || undefined,
           preco,
           imagens,
-          tamanhos: [...PIECE_SIZES],
+          tamanhos: tamanhosCategoria,
           estoque: estoqueIni,
           uso,
           custom: true,
@@ -3439,27 +3832,50 @@ function bindEvents() {
         alert('API: não foi possível criar o produto (' + r.erro + '). Salvando só no navegador.')
       }
 
-      const newProduct: Product = {
-        id: `custom-${Date.now()}`,
-        nome,
-        marca,
-        categoria,
-        subcategoria: subcategoria || undefined,
-        preco,
-        imagens,
-        tamanhos: [...PIECE_SIZES],
-        estoque: estoqueIni,
-        uso,
-        custom: true,
-        modelo: false
+      if (editingProduct) {
+        const updated: Product = {
+          ...editingProduct,
+          nome,
+          marca,
+          categoria,
+          subcategoria: subcategoria || undefined,
+          preco,
+          imagens,
+          tamanhos: tamanhosCategoria,
+          estoque: estoqueIni,
+          uso
+        }
+        products = products.map((p, i) => (i === editingIndex ? updated : p))
+        adminEditingProductId = null
+      } else {
+        const newProduct: Product = {
+          id: `custom-${Date.now()}`,
+          nome,
+          marca,
+          categoria,
+          subcategoria: subcategoria || undefined,
+          preco,
+          imagens,
+          tamanhos: tamanhosCategoria,
+          estoque: estoqueIni,
+          uso,
+          custom: true,
+          modelo: false
+        }
+        products = [...products, newProduct]
       }
-      products = [...products, newProduct]
       saveProducts(products)
       adminPendingImageDataUrls = []
       adminForm.reset()
       notifySalvoComSucesso()
       render()
     })()
+  })
+
+  document.getElementById('admin-cancel-edit')?.addEventListener('click', () => {
+    adminEditingProductId = null
+    adminPendingImageDataUrls = []
+    render()
   })
 
   // Admin – excluir produto
@@ -3469,6 +3885,10 @@ function bindEvents() {
       void (async () => {
         if (!confirm(`Remover "${products[idx]?.nome}"?`)) return
         const p = products[idx]
+        if (p && adminEditingProductId === p.id) {
+          adminEditingProductId = null
+          adminPendingImageDataUrls = []
+        }
         if (p && storeApi.isMongoObjectId(p.id)) {
           const ok = await storeApi.deleteProduto(p.id)
           if (ok && (await refreshProductsFromApi())) return
@@ -3477,6 +3897,20 @@ function bindEvents() {
         saveProducts(products)
         render()
       })()
+    })
+  })
+
+  document.querySelectorAll<HTMLButtonElement>('[data-action="admin-edit"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.index)
+      const p = products[idx]
+      if (!p) return
+      adminEditingProductId = p.id
+      adminPendingImageDataUrls = [...p.imagens].slice(0, MAX_PRODUCT_IMAGES)
+      render()
+      window.setTimeout(() => {
+        document.getElementById('admin-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 0)
     })
   })
 

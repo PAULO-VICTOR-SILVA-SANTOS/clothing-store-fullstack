@@ -248,16 +248,17 @@ textarea:focus {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;
-  overflow: hidden;
   display: grid;
-  grid-template-rows: 160px 1fr;
+  grid-template-rows: auto 1fr;
 }
 
 .product-card img {
   width: 100%;
-  height: 160px;
+  height: 100%;
   object-fit: cover;
+  object-position: center;
   background: var(--surface-2);
+  display: block;
 }
 
 .product-body {
@@ -574,6 +575,88 @@ td {
   scroll-snap-align: start;
 }
 
+.image-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  background: rgba(10, 16, 29, 0.82);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.image-viewer-modal {
+  position: relative;
+  width: min(1000px, 96vw);
+  max-height: 92vh;
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+.image-viewer-img {
+  width: 100%;
+  max-height: calc(92vh - 70px);
+  object-fit: contain;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.image-viewer-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+}
+.image-viewer-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: rgba(17, 33, 58, 0.68);
+  color: #fff;
+  font-size: 1.2rem;
+  font-weight: 800;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.image-viewer-nav.prev { left: 8px; }
+.image-viewer-nav.next { right: 8px; }
+.image-viewer-caption {
+  color: #eef3ff;
+  text-align: center;
+  margin: 0;
+}
+.image-viewer-thumbs {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  justify-content: center;
+}
+.image-viewer-thumb {
+  width: 58px;
+  height: 58px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.image-viewer-thumb.active {
+  border-color: #fff;
+}
+.image-viewer-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 /* ─── Step Indicator ─────────────────────────────────────────────────────── */
 .steps {
   display: flex;
@@ -686,7 +769,10 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
 /* ─── Products ───────────────────────────────────────────────────────────── */
 .product-img-wrap {
   position: relative;
-  height: 160px;
+  aspect-ratio: 4 / 3;
+  min-height: 140px;
+  margin: 10px 10px 0;
+  border-radius: 12px;
   background: var(--surface-2);
   overflow: hidden;
 }
@@ -706,6 +792,7 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   height: 100%;
   object-fit: cover;
   scroll-snap-align: start;
+  cursor: zoom-in;
 }
 .product-carousel-hint {
   position: absolute;
@@ -720,6 +807,29 @@ input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; }
   color: #fff;
   pointer-events: none;
   white-space: nowrap;
+}
+.product-carousel-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: rgba(17, 33, 58, 0.68);
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 800;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  z-index: 3;
+}
+.product-carousel-nav.prev { left: 6px; }
+.product-carousel-nav.next { right: 6px; }
+.product-carousel-nav:hover {
+  background: rgba(17, 33, 58, 0.82);
 }
 .stock-msg {
   margin: 0;
@@ -1554,8 +1664,13 @@ body.cadastro-landing-active {
 @media (max-width: 520px) {
   h1 { font-size: 1.4rem; }
   .products-grid { grid-template-columns: 1fr; }
-  .product-card { grid-template-rows: 140px 1fr; }
-  .product-img-wrap { height: 140px; }
+  .product-card { grid-template-rows: auto 1fr; }
+  .product-img-wrap {
+    aspect-ratio: 16 / 10;
+    min-height: 132px;
+    margin: 8px 8px 0;
+    border-radius: 10px;
+  }
   .topbar-step { display: none; }
   .admin-btn { min-width: 44px; min-height: 44px; }
   .btn.tiny { min-height: 38px; }
@@ -1581,6 +1696,17 @@ body.cadastro-landing-active {
   }
 
   .app-shell { gap: 12px; }
+
+  .product-card {
+    grid-template-rows: auto 1fr;
+  }
+
+  .product-img-wrap {
+    aspect-ratio: 16 / 10;
+    min-height: 136px;
+    margin: 8px 8px 0;
+    border-radius: 10px;
+  }
 
   .card {
     padding: 14px;
@@ -1858,11 +1984,45 @@ body.cadastro-landing-active {
   border-radius: 14px;
   border: 1px dashed var(--line);
 }
+.admin-url-preview-wrap {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface-2);
+  border-radius: 12px;
+  border: 1px dashed var(--line);
+}
+.admin-url-preview-img {
+  width: min(100%, 360px);
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  object-fit: contain;
+  object-position: center;
+  display: block;
+}
 .admin-photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+/* Painel admin: mantém botões sempre com respiro entre si */
+.admin-table td[data-label="Ações"] {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.admin-table td[data-label="Ações"] .btn,
+.admin-photo-actions .btn,
+.form-actions .btn,
+.actions .btn {
+  margin: 0;
 }
 .admin-photo-preview-wrap {
   min-height: 40px;
@@ -2012,6 +2172,19 @@ body.cadastro-landing-active {
   font-weight: 500;
 }
 
+/* Admin > Adicionar produto: alterna campos de tamanho por categoria */
+#admin-form .admin-size-shoe-field {
+  display: none;
+}
+
+#admin-form:has(select[name="categoria"] option[value="Calçados"]:checked) .admin-size-text-field {
+  display: none;
+}
+
+#admin-form:has(select[name="categoria"] option[value="Calçados"]:checked) .admin-size-shoe-field {
+  display: grid;
+}
+
 .admin-pedido-wa-block {
   margin-top: 16px;
   padding-top: 16px;
@@ -2023,6 +2196,15 @@ body.cadastro-landing-active {
 
 .admin-pedido-wa-hint {
   margin: 0;
+}
+
+.admin-wa-clear-btn {
+  margin-top: 6px;
+}
+
+.admin-checkout-actions {
+  margin-top: 14px;
+  gap: 14px;
 }
 
 .pix-copy-box {
