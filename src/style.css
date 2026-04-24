@@ -150,6 +150,17 @@ textarea.admin-descricao-empresa {
   letter-spacing: 0.02em;
 }
 
+.admin-stock-alert-ul {
+  margin: 8px 0 0;
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+
+.admin-stock-alert-ul li {
+  margin: 6px 0;
+  line-height: 1.4;
+}
+
 input:focus,
 select:focus,
 textarea:focus {

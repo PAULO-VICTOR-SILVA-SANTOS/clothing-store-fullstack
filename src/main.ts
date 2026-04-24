@@ -13,6 +13,11 @@ import short3Img from '../images/short 3.jpg'
 
 /** Máximo de fotos por produto (admin + persistência). */
 const MAX_PRODUCT_IMAGES = 10
+/** Estoque por tamanho ≤ este valor dispara alerta no painel admin (sincronização com API). */
+const ADMIN_STOCK_ALERT_MIN = 2
+/** Intervalo do polling de estoque no admin quando `shouldSyncProductsToApi()` é verdadeiro. */
+const ADMIN_STOCK_POLL_MS = 20_000
+const ADMIN_STOCK_POLL_SEC = ADMIN_STOCK_POLL_MS / 1000
 /** Estoque usado quando o JSON antigo não tinha o campo `estoque`. */
 const LEGACY_DEFAULT_ESTOQUE = 999
 /** Estoque inicial das peças modelo de exemplo. */
@@ -105,6 +110,183 @@ function normalizeEstoquePorTamanhoRecord(
 
 function stockForSize(p: Product, size: PieceSize): number {
   return Math.max(0, Math.floor(Number(p.estoquePorTamanho?.[size] ?? 0)))
+}
+
+function adminStockMonitorKey(productId: string, size: string): string {
+  return `${productId}:${size}`
+}
+
+function buildAdminStockSnapshot(list: Product[]): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const p of list) {
+    const sizes = p.tamanhos.length ? p.tamanhos : productSizesForCategory(p.categoria)
+    for (const sz of sizes) {
+      m.set(adminStockMonitorKey(p.id, sz), stockForSize(p, sz))
+    }
+  }
+  return m
+}
+
+type LowStockLine = { nome: string; size: string; qty: number }
+
+function findLowStockEntries(list: Product[], maxUnits: number): LowStockLine[] {
+  const out: LowStockLine[] = []
+  for (const p of list) {
+    const sizes = p.tamanhos.length ? p.tamanhos : productSizesForCategory(p.categoria)
+    for (const sz of sizes) {
+      const q = stockForSize(p, sz)
+      if (q <= maxUnits) {
+        out.push({ nome: p.nome, size: sz, qty: q })
+      }
+    }
+  }
+  out.sort(
+    (a, b) =>
+      a.nome.localeCompare(b.nome, 'pt-BR') || a.size.localeCompare(b.size, 'pt-BR', { numeric: true })
+  )
+  return out
+}
+
+/** Para o timer. Só use `resetSnapshot` ao sair do painel admin — ao re-renderizar no admin o snapshot é mantido para detectar quedas de estoque. */
+function stopAdminStockPolling(resetSnapshot = false) {
+  if (adminStockPollTimer !== null) {
+    clearInterval(adminStockPollTimer)
+    adminStockPollTimer = null
+  }
+  if (resetSnapshot) {
+    adminStockLastSnapshot = new Map()
+  }
+}
+
+function updateAdminStockAlertPanel(list: Product[]) {
+  const box = document.getElementById('admin-stock-alert-list')
+  const status = document.getElementById('admin-stock-poll-status')
+  if (!box) return
+  const lows = findLowStockEntries(list, ADMIN_STOCK_ALERT_MIN)
+  if (!lows.length) {
+    box.innerHTML = `<p class="muted small">Nenhum tamanho com estoque ≤ ${ADMIN_STOCK_ALERT_MIN} neste momento.</p>`
+  } else {
+    box.innerHTML = `<ul class="admin-stock-alert-ul">${lows
+      .map(
+        (l) =>
+          `<li><strong>${escapeHtml(l.nome)}</strong> (${escapeHtml(l.size)}): <strong>${l.qty}</strong> un.</li>`
+      )
+      .join('')}</ul>`
+  }
+  if (status) {
+    status.textContent = `Última verificação: ${new Date().toLocaleTimeString('pt-BR')}`
+  }
+}
+
+function applyProductStockToAdminInputs(list: Product[]) {
+  const byId = new Map(list.map((p) => [p.id, p]))
+  document.querySelectorAll<HTMLInputElement>('.stock-edit-input[data-action="admin-stock-size"]').forEach((input) => {
+    const id = input.dataset.productId
+    const sz = input.dataset.size as PieceSize | undefined
+    if (!id || !sz) return
+    const p = byId.get(id)
+    if (!p) return
+    input.value = String(stockForSize(p, sz))
+  })
+}
+
+function refreshAdminStockNotifyButtonState() {
+  const btn = document.getElementById('admin-stock-enable-notify') as HTMLButtonElement | null
+  const status = document.getElementById('admin-stock-notify-status')
+  if (!btn || !status) return
+  if (typeof Notification === 'undefined') {
+    btn.style.display = 'none'
+    status.textContent = 'Notificações não disponíveis neste navegador.'
+    return
+  }
+  btn.style.display = ''
+  if (Notification.permission === 'granted') {
+    btn.textContent = 'Avisos ativos ✓'
+    btn.disabled = true
+    status.textContent = 'Alertas do sistema quando o estoque cruza o limite.'
+  } else if (Notification.permission === 'denied') {
+    btn.textContent = 'Notificações bloqueadas'
+    btn.disabled = true
+    status.textContent = 'Permita notificações nas configurações do navegador para este site.'
+  } else {
+    btn.textContent = 'Permitir avisos do navegador'
+    btn.disabled = false
+    status.textContent = ''
+  }
+}
+
+function bindAdminStockMonitorUi() {
+  refreshAdminStockNotifyButtonState()
+  const notifyBtn = document.getElementById('admin-stock-enable-notify')
+  if (notifyBtn && !notifyBtn.dataset.stockNotifyBound) {
+    notifyBtn.dataset.stockNotifyBound = '1'
+    notifyBtn.addEventListener('click', async () => {
+      if (typeof Notification === 'undefined') return
+      const perm = await Notification.requestPermission()
+      refreshAdminStockNotifyButtonState()
+      if (perm === 'granted') {
+        try {
+          new Notification('Estoque — alertas ativos', {
+            body: `Avisaremos quando algum tamanho passar a ter até ${ADMIN_STOCK_ALERT_MIN} unidades.`
+          })
+        } catch {
+          /* ignore */
+        }
+      }
+    })
+  }
+}
+
+async function adminStockPollTick() {
+  if (appState.step !== 'admin' || !shouldSyncProductsToApi()) return
+  if (adminStockPollInFlight) return
+  adminStockPollInFlight = true
+  try {
+    const data = await storeApi.fetchProdutos(12000)
+    if (data === null || !Array.isArray(data)) return
+    const next = data.map(normalizeProduct)
+    const prevSnap = adminStockLastSnapshot
+    const newSnap = buildAdminStockSnapshot(next)
+
+    if (prevSnap.size > 0 && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      for (const [key, newQty] of newSnap) {
+        const oldQty = prevSnap.get(key)
+        if (oldQty !== undefined && oldQty > ADMIN_STOCK_ALERT_MIN && newQty <= ADMIN_STOCK_ALERT_MIN) {
+          const colon = key.indexOf(':')
+          const id = colon >= 0 ? key.slice(0, colon) : key
+          const sz = colon >= 0 ? key.slice(colon + 1) : ''
+          const p = next.find((x) => x.id === id)
+          if (p && sz) {
+            try {
+              new Notification('Estoque baixo', {
+                body: `${p.nome} (${sz}): ${newQty} un. — limite ${ADMIN_STOCK_ALERT_MIN}`,
+                tag: `stock-${key}`
+              })
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+    }
+
+    adminStockLastSnapshot = newSnap
+    products = next
+    saveProducts(products)
+    syncCartWithStock()
+    persistState()
+    updateAdminStockAlertPanel(next)
+    applyProductStockToAdminInputs(next)
+  } finally {
+    adminStockPollInFlight = false
+  }
+}
+
+function startAdminStockPolling() {
+  stopAdminStockPolling(false)
+  if (appState.step !== 'admin' || !shouldSyncProductsToApi()) return
+  void adminStockPollTick()
+  adminStockPollTimer = setInterval(() => void adminStockPollTick(), ADMIN_STOCK_POLL_MS)
 }
 
 function productHasAnyStock(p: Product): boolean {
@@ -859,6 +1041,7 @@ function adminTableStockRowHtml(p: Product, rowIndex: number): string {
           value="${stockForSize(p, sz)}"
           data-action="admin-stock-size"
           data-index="${rowIndex}"
+          data-product-id="${escapeAttr(p.id)}"
           data-size="${escapeAttr(sz)}"
           aria-label="Estoque ${escapeAttr(sz)} de ${escapeAttr(p.nome)}"
         />
@@ -1277,6 +1460,10 @@ let brandingPendingLogoDataUrl: string | null = null
 let adminSecretBound = false
 let adminSecretTapCount = 0
 let adminSecretTapResetTimer: ReturnType<typeof setTimeout> | null = null
+
+let adminStockPollTimer: ReturnType<typeof setInterval> | null = null
+let adminStockLastSnapshot = new Map<string, number>()
+let adminStockPollInFlight = false
 const catalogSelectedSizes: Record<string, PieceSize> = {}
 const catalogImageIndexByProduct: Record<string, number> = {}
 /** Evita listeners duplicados em `.catalog-products-wrap` a cada refresh da grade. */
@@ -1456,6 +1643,7 @@ function setStep(step: Step) {
     adminPendingImageDataUrls = []
     adminEditingProductId = null
     brandingPendingLogoDataUrl = null
+    stopAdminStockPolling(true)
   }
   appState.prevStep = appState.step
   appState.step = step
@@ -2673,15 +2861,33 @@ function adminScreen() {
     `
     : ''
 
+  const adminStockMonitorHtml = shouldSyncProductsToApi()
+    ? `
+      <div class="card" id="admin-stock-monitor-panel">
+        <h2>Alertas de estoque (API)</h2>
+        <p class="muted small" style="margin-bottom:10px;">
+          Atualização automática a cada <strong>${ADMIN_STOCK_POLL_SEC} s</strong> com o painel aberto e sincronização com a API ativa.
+          Lista cada <strong>tamanho</strong> com estoque <strong>≤ ${ADMIN_STOCK_ALERT_MIN} un.</strong> (inclui zero).
+        </p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
+          <button type="button" class="btn" id="admin-stock-enable-notify">Permitir avisos do navegador</button>
+          <span class="muted small" id="admin-stock-notify-status"></span>
+        </div>
+        <p class="muted small" id="admin-stock-poll-status" aria-live="polite"></p>
+        <div id="admin-stock-alert-list"></div>
+      </div>
+    `
+    : ''
+
   return `
     <section class="screen fade-in">
       <div class="card">
         <p class="eyebrow">Painel administrativo</p>
         <h1>Gerenciar Produtos</h1>
-        <p class="lead">Cadastre peças da sua loja de roupas. Com API + MongoDB, fotos podem ir para o servidor e o catálogo sincroniza automaticamente em desenvolvimento.</p>
       </div>
 
       ${adminApiConnectionHtml}
+      ${adminStockMonitorHtml}
       ${adminPedidosServidorHtml}
 
       <div class="card">
@@ -4243,6 +4449,11 @@ function bindEvents() {
   })
 
   document.getElementById('back-from-admin')?.addEventListener('click', () => setStep('catalogo'))
+
+  if (appState.step === 'admin' && shouldSyncProductsToApi()) {
+    bindAdminStockMonitorUi()
+    startAdminStockPolling()
+  }
 
   if (appState.step === 'catalogo') {
     bindCatalogGridActions()
