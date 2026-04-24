@@ -1356,6 +1356,45 @@ async function refreshProductsFromApi(): Promise<boolean> {
   return true
 }
 
+/**
+ * Fotos da câmera podem ficar só como data: no JSON; no próximo GET o cliente pode falhar ao exibir ou estourar quota.
+ * Com API + upload ativo, reenvia cada data URL ao POST /upload e usa a URL http(s) retornada antes de gravar o produto.
+ * (Em hosts com disco efêmero, prefira CLOUDINARY_URL na API para URLs estáveis.)
+ */
+async function ensureHttpImageUrlsForApi(urls: string[]): Promise<string[]> {
+  if (!shouldTryServerUpload() || !urls.length) return urls
+  const out: string[] = []
+  for (const raw of urls) {
+    if (out.length >= MAX_PRODUCT_IMAGES) break
+    const u = raw.trim()
+    if (!u) continue
+    if (u.startsWith('data:image')) {
+      try {
+        const res = await fetch(u)
+        const blob = await res.blob()
+        if (!blob.size) {
+          out.push(u)
+          continue
+        }
+        const mime = blob.type.startsWith('image/') ? blob.type : 'image/jpeg'
+        const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg'
+        const file = new File([blob], `foto.${ext}`, { type: mime })
+        const up = await storeApi.postUploadArquivos([file])
+        if (up.ok && up.urls[0]) {
+          out.push(up.urls[0])
+        } else {
+          out.push(u)
+        }
+      } catch {
+        out.push(u)
+      }
+    } else {
+      out.push(u)
+    }
+  }
+  return out.slice(0, MAX_PRODUCT_IMAGES)
+}
+
 function findCustomerProfileByName(name: string): Customer | null {
   const key = normalizeLookup(name)
   if (!key) return null
@@ -3099,6 +3138,9 @@ function adminScreen() {
           </div>
           <div class="full admin-photo-block">
             <p class="muted small" style="margin-bottom: 8px;">Fotos da peça (até ${MAX_PRODUCT_IMAGES}) — frente, costas, lateral…</p>
+            <p class="muted small" style="margin-bottom: 8px;">
+              Com API ativa, use <strong>Entrar na API</strong> antes de salvar. Em produção, configure <strong>CLOUDINARY_URL</strong> na API para as fotos não dependerem do disco do servidor (ex.: após reinício no Render).
+            </p>
             <div class="admin-photo-actions">
               <button type="button" class="btn" id="admin-pick-gallery">📁 Galeria ou arquivo</button>
               <button type="button" class="btn" id="admin-pick-camera">📷 Tirar foto</button>
@@ -4210,6 +4252,11 @@ function bindEvents() {
       const editingProduct = editingIndex >= 0 ? products[editingIndex] : null
 
       const useApi = shouldSyncProductsToApi()
+      let imagensForApi = imagens
+      if (useApi && shouldTryServerUpload() && imagens.some((x) => String(x).trim().startsWith('data:'))) {
+        imagensForApi = await ensureHttpImageUrlsForApi(imagens)
+      }
+
       if (editingProduct && useApi && storeApi.isMongoObjectId(editingProduct.id)) {
         const r = await storeApi.patchProdutoJson(editingProduct.id, {
           nome,
@@ -4217,7 +4264,7 @@ function bindEvents() {
           categoria,
           subcategoria: subcategoria || undefined,
           preco,
-          imagens,
+          imagens: imagensForApi,
           tamanhos: tamanhosCategoria,
           estoque: estoqueIni,
           estoquePorTamanho,
@@ -4247,7 +4294,7 @@ function bindEvents() {
           categoria,
           subcategoria: subcategoria || undefined,
           preco,
-          imagens,
+          imagens: imagensForApi,
           tamanhos: tamanhosCategoria,
           estoque: estoqueIni,
           estoquePorTamanho,
