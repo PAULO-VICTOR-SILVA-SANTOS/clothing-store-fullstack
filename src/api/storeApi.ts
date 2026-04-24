@@ -17,6 +17,14 @@ export function clearAdminJwt(): void {
   }
 }
 
+function httpErroMessage(r: Response, data: unknown): string {
+  const msg = typeof (data as { erro?: string }).erro === 'string' ? (data as { erro: string }).erro.trim() : ''
+  if (msg) return msg
+  const st = typeof r.statusText === 'string' ? r.statusText.trim() : ''
+  if (st) return st
+  return r.status ? `HTTP ${r.status}` : 'Resposta inválida da API'
+}
+
 /** Mesmo valor que `ADMIN_API_KEY` no servidor — só para rotas de gestão (nunca no checkout do cliente).
  * Prioridade: JWT em localStorage (Bearer) > `VITE_ADMIN_API_KEY` (header x-admin-key). */
 function withAdmin(base: Record<string, string> = {}): Record<string, string> {
@@ -35,6 +43,20 @@ function withAdmin(base: Record<string, string> = {}): Record<string, string> {
   return out
 }
 
+async function fetchWithAdminAuthRetry(
+  url: string,
+  init: RequestInit,
+  headerBase: Record<string, string>
+): Promise<Response> {
+  const run = () => fetch(url, { ...init, headers: withAdmin(headerBase) })
+  let r = await run()
+  if (r.status === 401) {
+    clearAdminJwt()
+    r = await run()
+  }
+  return r
+}
+
 /** Login do lojista na API (POST /auth/login). Requer `JWT_SECRET` e `ADMIN_PASSWORD` ou `ADMIN_API_KEY` no servidor. */
 export async function postAuthLogin(
   password: string
@@ -47,8 +69,7 @@ export async function postAuthLogin(
     })
     const data: unknown = await r.json().catch(() => ({}))
     if (!r.ok) {
-      const erro = typeof (data as { erro?: string }).erro === 'string' ? (data as { erro: string }).erro : r.statusText
-      return { ok: false, erro, status: r.status }
+      return { ok: false, erro: httpErroMessage(r, data), status: r.status }
     }
     const token = typeof (data as { token?: string }).token === 'string' ? (data as { token: string }).token : ''
     const expiresInSec = Number((data as { expiresInSec?: number }).expiresInSec)
@@ -83,20 +104,21 @@ export async function fetchProdutos(timeoutMs: number): Promise<unknown[] | null
   }
 }
 
-/** Lista pedidos (GET /pedidos). Exige credencial no servidor se `ADMIN_API_KEY` e/ou `JWT_SECRET` estiverem definidas. */
+/** Lista pedidos (GET /pedidos). Resposta: array legado ou `{ items, total, limit, skip }`. */
 export async function fetchPedidos(timeoutMs = 12000): Promise<unknown[] | null> {
   const url = `${apiOrigin()}/pedidos`
   const ctrl = new AbortController()
   const tid = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
-    const r = await fetch(url, {
-      signal: ctrl.signal,
-      headers: withAdmin({ Accept: 'application/json' })
-    })
+    const r = await fetchWithAdminAuthRetry(url, { signal: ctrl.signal }, { Accept: 'application/json' })
     clearTimeout(tid)
     if (!r.ok) return null
     const data: unknown = await r.json()
-    return Array.isArray(data) ? data : null
+    if (Array.isArray(data)) return data
+    if (data && typeof data === 'object' && Array.isArray((data as { items?: unknown }).items)) {
+      return (data as { items: unknown[] }).items
+    }
+    return null
   } catch {
     clearTimeout(tid)
     return null
@@ -107,15 +129,14 @@ export async function postProdutoJson(
   body: Record<string, unknown>
 ): Promise<{ ok: true; data: unknown } | { ok: false; erro: string; status: number }> {
   try {
-    const r = await fetch(`${apiOrigin()}/produtos`, {
-      method: 'POST',
-      headers: withAdmin({ 'Content-Type': 'application/json', Accept: 'application/json' }),
-      body: JSON.stringify(body)
-    })
+    const r = await fetchWithAdminAuthRetry(
+      `${apiOrigin()}/produtos`,
+      { method: 'POST', body: JSON.stringify(body) },
+      { 'Content-Type': 'application/json', Accept: 'application/json' }
+    )
     const data: unknown = await r.json().catch(() => ({}))
     if (!r.ok) {
-      const erro = typeof (data as { erro?: string }).erro === 'string' ? (data as { erro: string }).erro : r.statusText
-      return { ok: false, erro, status: r.status }
+      return { ok: false, erro: httpErroMessage(r, data), status: r.status }
     }
     return { ok: true, data }
   } catch {
@@ -128,15 +149,14 @@ export async function patchProdutoJson(
   patch: Record<string, unknown>
 ): Promise<{ ok: true; data: unknown } | { ok: false; erro: string; status: number }> {
   try {
-    const r = await fetch(`${apiOrigin()}/produtos/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      headers: withAdmin({ 'Content-Type': 'application/json', Accept: 'application/json' }),
-      body: JSON.stringify(patch)
-    })
+    const r = await fetchWithAdminAuthRetry(
+      `${apiOrigin()}/produtos/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: JSON.stringify(patch) },
+      { 'Content-Type': 'application/json', Accept: 'application/json' }
+    )
     const data: unknown = await r.json().catch(() => ({}))
     if (!r.ok) {
-      const erro = typeof (data as { erro?: string }).erro === 'string' ? (data as { erro: string }).erro : r.statusText
-      return { ok: false, erro, status: r.status }
+      return { ok: false, erro: httpErroMessage(r, data), status: r.status }
     }
     return { ok: true, data }
   } catch {
@@ -146,10 +166,11 @@ export async function patchProdutoJson(
 
 export async function deleteProduto(id: string): Promise<boolean> {
   try {
-    const r = await fetch(`${apiOrigin()}/produtos/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: withAdmin({ Accept: 'application/json' })
-    })
+    const r = await fetchWithAdminAuthRetry(
+      `${apiOrigin()}/produtos/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+      { Accept: 'application/json' }
+    )
     return r.ok || r.status === 204
   } catch {
     return false
@@ -158,7 +179,10 @@ export async function deleteProduto(id: string): Promise<boolean> {
 
 export async function postPedidoJson(
   body: Record<string, unknown>
-): Promise<{ ok: true } | { ok: false; erro: string; status: number }> {
+): Promise<
+  | { ok: true; orderId?: string; numero?: string }
+  | { ok: false; erro: string; status: number }
+> {
   try {
     const r = await fetch(`${apiOrigin()}/pedidos`, {
       method: 'POST',
@@ -167,10 +191,14 @@ export async function postPedidoJson(
     })
     const data: unknown = await r.json().catch(() => ({}))
     if (!r.ok) {
-      const erro = typeof (data as { erro?: string }).erro === 'string' ? (data as { erro: string }).erro : r.statusText
-      return { ok: false, erro, status: r.status }
+      return { ok: false, erro: httpErroMessage(r, data), status: r.status }
     }
-    return { ok: true }
+    const d = data as { orderId?: string; numero?: string }
+    return {
+      ok: true,
+      orderId: typeof d.orderId === 'string' ? d.orderId : undefined,
+      numero: typeof d.numero === 'string' ? d.numero : undefined
+    }
   } catch {
     return { ok: false, erro: 'Sem conexão com a API', status: 0 }
   }
@@ -182,16 +210,19 @@ export async function postPedidoJson(
  */
 export async function postUploadArquivos(files: File[]): Promise<{ ok: true; urls: string[] } | { ok: false; erro: string }> {
   if (!files.length) return { ok: false, erro: 'Nenhum arquivo' }
-  const fd = new FormData()
-  for (const f of files) fd.append('arquivos', f)
+  const mkFd = () => {
+    const fd = new FormData()
+    for (const f of files) fd.append('arquivos', f)
+    return fd
+  }
   try {
-    const r = await fetch(`${apiOrigin()}/upload`, {
-      method: 'POST',
-      headers: withAdmin({}),
-      body: fd
-    })
+    let r = await fetch(`${apiOrigin()}/upload`, { method: 'POST', headers: withAdmin({}), body: mkFd() })
+    if (r.status === 401) {
+      clearAdminJwt()
+      r = await fetch(`${apiOrigin()}/upload`, { method: 'POST', headers: withAdmin({}), body: mkFd() })
+    }
     const data = (await r.json().catch(() => ({}))) as { urls?: string[]; erro?: string }
-    if (!r.ok) return { ok: false, erro: data.erro ?? r.statusText }
+    if (!r.ok) return { ok: false, erro: httpErroMessage(r, data) }
     if (!Array.isArray(data.urls)) return { ok: false, erro: 'Resposta inválida' }
     const origin = apiOrigin()
     const urls = data.urls.map((u) => (u.startsWith('http') ? u : `${origin || ''}${u}`))

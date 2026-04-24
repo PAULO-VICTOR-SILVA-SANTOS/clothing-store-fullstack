@@ -2626,29 +2626,47 @@ function adminScreen() {
   const adminPixKeyValue = escapeAttr(checkoutOptions.pixKey ?? '')
   const adminPedidoWhatsappValue = escapeAttr(formatPedidoWhatsappForAdminField(checkoutOptions.pedidoWhatsapp ?? ''))
 
+  const showAdminApiConnection = shouldSyncProductsToApi() || Boolean(storeApi.apiOrigin())
   const showServerOrdersDevPanel = import.meta.env.VITE_SHOW_SERVER_ORDERS_DEV === 'true'
+
+  const adminApiConnectionHtml = showAdminApiConnection
+    ? `
+      <div class="card" id="admin-api-session-panel">
+        <h2>Conexão com a API</h2>
+        <p class="muted small" style="margin-bottom:10px;">
+          Para <strong>gravar produtos e fotos no servidor</strong>, cada aparelho precisa estar autenticado.
+          O token fica só neste navegador — no celular, use <strong>Entrar na API</strong> com a mesma senha configurada na API
+          (<code>ADMIN_PASSWORD</code> ou <code>ADMIN_API_KEY</code>).
+        </p>
+        <p class="muted small" style="margin-bottom:8px;">
+          ${
+            adminJwtStored()
+              ? '<strong>Sessão API:</strong> token JWT guardado neste aparelho.'
+              : import.meta.env?.VITE_ADMIN_API_KEY
+                ? '<strong>Sessão API:</strong> usando chave do build (<code>VITE_ADMIN_API_KEY</code>).'
+                : '<strong>Sessão API:</strong> não configurada — toque em <strong>Entrar na API</strong> abaixo.'
+          }
+        </p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:4px;align-items:center;">
+          <button type="button" class="btn" id="admin-api-jwt-login">Entrar na API (JWT)</button>
+          <button type="button" class="btn tiny danger" id="admin-api-jwt-logout">Sair da API</button>
+        </div>
+        <p class="muted small" style="margin:8px 0 0;">
+          Alternativa: mesma chave em <strong>ADMIN_API_KEY</strong> (servidor) e <strong>VITE_ADMIN_API_KEY</strong> no front
+          (evite se possível — a chave vai no bundle).
+        </p>
+      </div>
+    `
+    : ''
+
   const adminPedidosServidorHtml = showServerOrdersDevPanel
     ? `
       <div class="card" id="admin-pedidos-panel">
         <h2>Pedidos no servidor</h2>
         <p class="muted small" style="margin-bottom:10px;">
-          Últimos pedidos gravados no MongoDB. Se a API exigir credencial, prefira <strong>Entrar na API</strong> (JWT com
-          <code>JWT_SECRET</code> no servidor) em vez de colocar a chave no bundle. Alternativa: mesma chave em
-          <strong>ADMIN_API_KEY</strong> (servidor) e <strong>VITE_ADMIN_API_KEY</strong> (<code>.env</code> do front).
+          Últimos pedidos gravados no MongoDB. Se não carregar, confira <strong>Conexão com a API</strong>
+          ${showAdminApiConnection ? 'acima' : '(ative sincronização com a API e faça login)'}.
         </p>
-        <p class="muted small" style="margin-bottom:8px;">
-          ${
-            adminJwtStored()
-              ? '<strong>Sessão API:</strong> token JWT guardado neste navegador.'
-              : import.meta.env?.VITE_ADMIN_API_KEY
-                ? '<strong>Sessão API:</strong> usando chave do <code>.env</code> (VITE_ADMIN_API_KEY).'
-                : '<strong>Sessão API:</strong> não configurada — use “Entrar na API” ou defina VITE_ADMIN_API_KEY.'
-          }
-        </p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center;">
-          <button type="button" class="btn" id="admin-api-jwt-login">Entrar na API (JWT)</button>
-          <button type="button" class="btn tiny danger" id="admin-api-jwt-logout">Sair da API</button>
-        </div>
         <button type="button" class="btn primary" id="admin-load-pedidos">Carregar pedidos</button>
         <div id="admin-pedidos-out" class="admin-pedidos-out" style="margin-top:14px;"></div>
       </div>
@@ -2663,6 +2681,7 @@ function adminScreen() {
         <p class="lead">Cadastre peças da sua loja de roupas. Com API + MongoDB, fotos podem ir para o servidor e o catálogo sincroniza automaticamente em desenvolvimento.</p>
       </div>
 
+      ${adminApiConnectionHtml}
       ${adminPedidosServidorHtml}
 
       <div class="card">
@@ -3430,18 +3449,17 @@ function bindEvents() {
         cartItems().every(({ product }) => storeApi.isMongoObjectId(product.id))
 
       if (useApiPedido) {
-        const numero = gerarNumeroPedido()
         const r = await storeApi.postPedidoJson({
-          numero,
           items: cartItems().map(({ product, qty, size }) => ({ productId: product.id, qty, tamanho: size })),
           total: checkoutOrderTotal(),
+          deliveryFee: checkoutDeliveryFeeTotal(),
           customer: appState.customer,
           deliveryMode: appState.deliveryMode,
           paymentMethod: appState.paymentMethod,
           cashChangeFor: appState.cashChangeFor
         })
         if (r.ok) {
-          appState.pedidoNumero = numero
+          appState.pedidoNumero = r.numero?.trim() || gerarNumeroPedido()
           persistState()
           await refreshProductsFromApi()
           setStep('concluido')
