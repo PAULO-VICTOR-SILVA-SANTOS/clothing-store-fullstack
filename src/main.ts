@@ -278,6 +278,8 @@ async function adminStockPollTick() {
     persistState()
     updateAdminStockAlertPanel(next)
     applyProductStockToAdminInputs(next)
+    const draftImagesUpdated = syncPendingAfterProductListUpdate()
+    if (draftImagesUpdated && appState.step === 'admin') refreshAdminPhotoDraftUi()
   } finally {
     adminStockPollInFlight = false
   }
@@ -1371,6 +1373,7 @@ async function tryReplaceProductsFromApiIfDev() {
   apiCatalogSyncMessage = null
   products = data.map(normalizeProduct)
   saveProducts(products)
+  syncPendingAfterProductListUpdate()
   render()
 }
 
@@ -1381,8 +1384,61 @@ async function refreshProductsFromApi(): Promise<boolean> {
   apiCatalogSyncMessage = null
   products = data.map(normalizeProduct)
   saveProducts(products)
+  syncPendingAfterProductListUpdate()
   render()
   return true
+}
+
+function markAdminPhotoDraftDirty(): void {
+  adminPhotoDraftDirty = true
+}
+
+function resetAdminPhotoDraftDirty(): void {
+  adminPhotoDraftDirty = false
+}
+
+/**
+ * Quando o catálogo é substituído pelo GET /produtos, mantém as miniaturas do admin alinhadas
+ * ao produto em edição — mas só se o lojista ainda não tiver alterado fotos no rascunho.
+ * Assim evita “trocar sozinho” imagens de PC vs celular e não sobrescreve remoções/adições locais.
+ */
+function syncPendingAfterProductListUpdate(): boolean {
+  if (!adminEditingProductId || adminPhotoDraftDirty) return false
+  const p = products.find((x) => x.id === adminEditingProductId)
+  if (!p) return false
+  const nextUrls = [...p.imagens].slice(0, MAX_PRODUCT_IMAGES)
+  if (JSON.stringify(nextUrls) === JSON.stringify(adminPendingImageDataUrls)) return false
+  adminPendingImageDataUrls = nextUrls
+  return true
+}
+
+function adminPhotoThumbsHtml(): string {
+  return adminPendingImageDataUrls
+    .map(
+      (url, idx) => `
+                <div class="admin-thumb-cell">
+                  <img src="${escapeAttr(url)}" alt="" />
+                  <button type="button" class="btn tiny danger admin-thumb-remove" data-action="admin-remove-thumb" data-thumb-index="${idx}" aria-label="Remover foto">×</button>
+                </div>`
+    )
+    .join('')
+}
+
+function refreshAdminPhotoDraftUi(): void {
+  const countEl = document.getElementById('admin-photo-count')
+  const wrap = document.getElementById('admin-photo-thumbs')
+  if (countEl) countEl.textContent = `${adminPendingImageDataUrls.length}/${MAX_PRODUCT_IMAGES} fotos`
+  if (!wrap) return
+  wrap.innerHTML = adminPhotoThumbsHtml()
+  wrap.querySelectorAll<HTMLButtonElement>('[data-action="admin-remove-thumb"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.thumbIndex)
+      if (Number.isNaN(idx)) return
+      markAdminPhotoDraftDirty()
+      adminPendingImageDataUrls = adminPendingImageDataUrls.filter((_, i) => i !== idx)
+      refreshAdminPhotoDraftUi()
+    })
+  })
 }
 
 /**
@@ -1520,6 +1576,8 @@ const ADMIN_PIN = '1323' // troque por um PIN privado
 /** Fotos escolhidas antes de salvar o produto (data URLs). Limpa ao sair do admin. */
 let adminPendingImageDataUrls: string[] = []
 let adminEditingProductId: string | null = null
+/** Se true, o catálogo vindo da API não sobrescreve as miniaturas do formulário (rascunho de fotos). */
+let adminPhotoDraftDirty = false
 let imageViewerState: { productId: string; index: number } | null = null
 
 /** Logo da loja escolhida em arquivo — aplicada ao salvar identidade. Limpa ao sair do admin. */
@@ -1710,6 +1768,7 @@ function setStep(step: Step) {
   if (step !== 'admin') {
     adminPendingImageDataUrls = []
     adminEditingProductId = null
+    resetAdminPhotoDraftDirty()
     brandingPendingLogoDataUrl = null
     stopAdminStockPolling(true)
   }
@@ -3187,15 +3246,7 @@ function adminScreen() {
             <input type="file" id="admin-product-file-camera" accept="image/*" capture="environment" class="visually-hidden" tabindex="-1" aria-hidden="true" />
             <p class="muted small" id="admin-photo-count">${adminPendingImageDataUrls.length}/${MAX_PRODUCT_IMAGES} fotos</p>
             <div id="admin-photo-thumbs" class="admin-photo-thumbs">
-              ${adminPendingImageDataUrls
-                .map(
-                  (url, idx) => `
-                <div class="admin-thumb-cell">
-                  <img src="${escapeAttr(url)}" alt="" />
-                  <button type="button" class="btn tiny danger admin-thumb-remove" data-action="admin-remove-thumb" data-thumb-index="${idx}" aria-label="Remover foto">×</button>
-                </div>`
-                )
-                .join('')}
+              ${adminPhotoThumbsHtml()}
             </div>
           </div>
           <label class="full">
@@ -3969,6 +4020,7 @@ function bindEvents() {
   }
 
   const appendAdminDataUrls = (urls: string[]) => {
+    const prevSnap = JSON.stringify(adminPendingImageDataUrls)
     const next = [...adminPendingImageDataUrls]
     for (const u of urls) {
       const s = u.trim()
@@ -3984,7 +4036,10 @@ function bindEvents() {
       next.push(s)
     }
     adminPendingImageDataUrls = next
-    render()
+    if (JSON.stringify(adminPendingImageDataUrls) === prevSnap) return
+    markAdminPhotoDraftDirty()
+    if (appState.step === 'admin') refreshAdminPhotoDraftUi()
+    else render()
   }
 
   const readAdminImageFile = (file: File | undefined, onDone: (url: string) => void) => {
@@ -4087,16 +4142,20 @@ function bindEvents() {
     })()
   })
   adminClearPhoto?.addEventListener('click', () => {
+    markAdminPhotoDraftDirty()
     adminPendingImageDataUrls = []
-    render()
+    if (appState.step === 'admin') refreshAdminPhotoDraftUi()
+    else render()
   })
 
   document.querySelectorAll<HTMLButtonElement>('[data-action="admin-remove-thumb"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const idx = Number(btn.dataset.thumbIndex)
       if (Number.isNaN(idx)) return
+      markAdminPhotoDraftDirty()
       adminPendingImageDataUrls = adminPendingImageDataUrls.filter((_, i) => i !== idx)
-      render()
+      if (appState.step === 'admin') refreshAdminPhotoDraftUi()
+      else render()
     })
   })
 
@@ -4256,10 +4315,12 @@ function bindEvents() {
       alert(`Limite de ${MAX_PRODUCT_IMAGES} fotos por produto.`)
       return
     }
+    markAdminPhotoDraftDirty()
     adminPendingImageDataUrls = [normalizedUrl, ...adminPendingImageDataUrls].slice(0, MAX_PRODUCT_IMAGES)
     adminImageUrlInput.value = ''
     syncAdminImageUrlPreview()
-    render()
+    if (appState.step === 'admin') refreshAdminPhotoDraftUi()
+    else render()
   })
   syncAdminImageUrlPreview()
 
@@ -4333,6 +4394,7 @@ function bindEvents() {
           saveProducts(products)
           adminEditingProductId = null
           adminPendingImageDataUrls = []
+          resetAdminPhotoDraftDirty()
           adminForm.reset()
           notifySalvoComSucesso()
           render()
@@ -4368,6 +4430,7 @@ function bindEvents() {
           products = [...products, normalizeProduct(r.data)]
           saveProducts(products)
           adminPendingImageDataUrls = []
+          resetAdminPhotoDraftDirty()
           adminForm.reset()
           notifySalvoComSucesso()
           render()
@@ -4422,6 +4485,7 @@ function bindEvents() {
       }
       saveProducts(products)
       adminPendingImageDataUrls = []
+      resetAdminPhotoDraftDirty()
       adminForm.reset()
       notifySalvoComSucesso()
       render()
@@ -4431,6 +4495,7 @@ function bindEvents() {
   document.getElementById('admin-cancel-edit')?.addEventListener('click', () => {
     adminEditingProductId = null
     adminPendingImageDataUrls = []
+    resetAdminPhotoDraftDirty()
     render()
   })
 
@@ -4444,6 +4509,7 @@ function bindEvents() {
         if (p && adminEditingProductId === p.id) {
           adminEditingProductId = null
           adminPendingImageDataUrls = []
+          resetAdminPhotoDraftDirty()
         }
         if (p && storeApi.isMongoObjectId(p.id)) {
           const ok = await storeApi.deleteProduto(p.id)
@@ -4461,6 +4527,7 @@ function bindEvents() {
       const idx = Number(btn.dataset.index)
       const p = products[idx]
       if (!p) return
+      resetAdminPhotoDraftDirty()
       adminEditingProductId = p.id
       adminPendingImageDataUrls = [...p.imagens].slice(0, MAX_PRODUCT_IMAGES)
       render()
