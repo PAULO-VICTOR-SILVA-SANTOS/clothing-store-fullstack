@@ -13,7 +13,9 @@ export const produtosRouter = express.Router()
 
 produtosRouter.get('/', async (_req, res) => {
   try {
-    const list = await Product.find().sort({ createdAt: -1 }).lean()
+    // Evita sort em memória sem índice (erro QueryExceededMemoryLimitNoDiskUseAllowed no Atlas).
+    // _id já é indexado e mantém ordem de criação adequada para listagem.
+    const list = await Product.find().sort({ _id: -1 }).lean()
     res.json(list.map((p) => toApiProduct({ ...p, _id: p._id })))
   } catch (e) {
     console.error(e)
