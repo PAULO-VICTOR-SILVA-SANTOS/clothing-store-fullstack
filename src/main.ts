@@ -1,5 +1,6 @@
 import './style.css'
 import * as storeApi from './api/storeApi'
+import { finalizeAdminProductImages } from './utils/adminImages'
 import logoLugarDasTintas from '../images/LOGO CASTRO MULTIMARCAS.png'
 import cadastroLojaBg from '../images/cadastro-loja-castro.png'
 import camisa1Img from '../images/camisa 1.jpg'
@@ -3951,6 +3952,12 @@ function bindEvents() {
   const openFilePicker = (input: HTMLInputElement | null) => {
     if (!input) return
     try {
+      // Permite selecionar novamente a mesma foto (alguns browsers não disparam change sem limpar).
+      input.value = ''
+    } catch {
+      /* ignore */
+    }
+    try {
       if (typeof input.showPicker === 'function') {
         input.showPicker()
         return
@@ -4293,20 +4300,17 @@ function bindEvents() {
           imagens.unshift(normalizedUrl)
         }
       }
-      if (imagens.length === 0) {
-        imagens.push('https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto')
-      }
-
       const editingIndex = adminEditingProductId
         ? products.findIndex((p) => p.id === adminEditingProductId)
         : -1
       const editingProduct = editingIndex >= 0 ? products[editingIndex] : null
+      const imagensFinal = finalizeAdminProductImages(imagens, Boolean(editingProduct))
 
       const useApi = shouldSyncProductsToApi()
       const strictRemotePersistence = useApi && !import.meta.env.DEV
-      let imagensForApi = imagens
-      if (useApi && shouldTryServerUpload() && imagens.some((x) => String(x).trim().startsWith('data:'))) {
-        imagensForApi = await ensureHttpImageUrlsForApi(imagens)
+      let imagensForApi = imagensFinal
+      if (useApi && shouldTryServerUpload() && imagensFinal.some((x) => String(x).trim().startsWith('data:'))) {
+        imagensForApi = await ensureHttpImageUrlsForApi(imagensFinal)
       }
 
       if (editingProduct && useApi && storeApi.isMongoObjectId(editingProduct.id)) {
@@ -4390,7 +4394,7 @@ function bindEvents() {
           categoria,
           subcategoria: subcategoria || undefined,
           preco,
-          imagens,
+          imagens: imagensFinal,
           tamanhos: tamanhosCategoria,
           estoquePorTamanho,
           estoque: estoqueIni,
@@ -4406,7 +4410,7 @@ function bindEvents() {
           categoria,
           subcategoria: subcategoria || undefined,
           preco,
-          imagens,
+          imagens: imagensFinal,
           tamanhos: tamanhosCategoria,
           estoquePorTamanho,
           estoque: estoqueIni,
