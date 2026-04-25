@@ -4239,8 +4239,17 @@ function bindEvents() {
     adminTextSizeWrap.hidden = Boolean(isShoes)
     adminShoeSizeWrap.style.display = isShoes ? '' : 'none'
     adminTextSizeWrap.style.display = isShoes ? 'none' : ''
+    // Campos desabilitados ficam fora da validação nativa e do FormData — evita bloqueio
+    // intermitente no mobile quando o bloco de calçado está oculto mas ainda era "required".
+    adminShoeSizeSelect.disabled = !isShoes
+    adminTextSizeSelect.disabled = Boolean(isShoes)
     adminShoeSizeSelect.required = Boolean(isShoes)
     adminTextSizeSelect.required = false
+    if (!isShoes) {
+      adminShoeSizeSelect.removeAttribute('required')
+    } else {
+      adminTextSizeSelect.removeAttribute('required')
+    }
     if (isShoes) {
       adminTextSizeSelect.value = ''
     }
