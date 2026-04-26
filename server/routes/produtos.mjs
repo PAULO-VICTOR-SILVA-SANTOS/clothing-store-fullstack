@@ -11,16 +11,35 @@ import {
 
 export const produtosRouter = express.Router()
 
-// 🧪 TESTE SEM MONGODB
+// ✅ GET PRODUTOS (REAL - COM MONGODB)
 produtosRouter.get('/', async (_req, res) => {
-  return res.json([{ teste: 'ok' }])
+  try {
+    console.log('[API] Buscando produtos...')
+
+    const list = await Product.find()
+      .sort({ _id: -1 })
+      .maxTimeMS(5000)
+      .lean()
+
+    console.log('[API] Produtos encontrados:', list.length)
+
+    res.json(list.map((p) => toApiProduct({ ...p, _id: p._id })))
+  } catch (e) {
+    console.error('[ERRO /produtos]:', e)
+    res.status(500).json({
+      erro: 'Falha ao listar produtos',
+      detalhe: e.message
+    })
+  }
 })
 
-// POST (mantido normal)
+// ✅ POST PRODUTO
 produtosRouter.post('/', requireAdminWhenConfigured, async (req, res) => {
   try {
     const b = req.body || {}
+
     const imagens = sanitizeImagens(b.imagens)
+
     const tamanhos = Array.isArray(b.tamanhos)
       ? b.tamanhos.map((x) => String(x).trim()).filter(Boolean)
       : []
@@ -39,16 +58,26 @@ produtosRouter.post('/', requireAdminWhenConfigured, async (req, res) => {
     }
 
     const legacyEstoque = Math.max(0, Math.floor(Number(b.estoque) || 0))
-    const estoquePorTamanho = sanitizeEstoquePorTamanho(b.estoquePorTamanho, tamanhos, legacyEstoque)
+
+    const estoquePorTamanho = sanitizeEstoquePorTamanho(
+      b.estoquePorTamanho,
+      tamanhos,
+      legacyEstoque
+    )
+
     const estoque = sumEstoquePorTamanho(estoquePorTamanho, tamanhos)
 
     const doc = await Product.create({
       nome: String(b.nome).trim(),
       marca: String(b.marca ?? '—').trim(),
       categoria: String(b.categoria).trim(),
-      subcategoria: b.subcategoria ? String(b.subcategoria).trim() : undefined,
+      subcategoria: b.subcategoria
+        ? String(b.subcategoria).trim()
+        : undefined,
       preco,
-      imagens: imagens.length ? imagens : ['https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'],
+      imagens: imagens.length
+        ? imagens
+        : ['https://placehold.co/400x220/e8f0fe/1a3a6b?text=Foto'],
       tamanhos,
       estoquePorTamanho,
       estoque,
@@ -59,29 +88,36 @@ produtosRouter.post('/', requireAdminWhenConfigured, async (req, res) => {
 
     res.status(201).json(toApiProduct(doc))
   } catch (e) {
-    console.error(e)
+    console.error('[ERRO POST /produtos]:', e)
     res.status(500).json({ erro: 'Falha ao criar produto' })
   }
 })
 
-// PATCH
+// ✅ PATCH PRODUTO
 produtosRouter.patch('/:id', requireAdminWhenConfigured, async (req, res) => {
   try {
     const { id } = req.params
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ erro: 'ID de produto inválido' })
+      return res.status(400).json({ erro: 'ID inválido' })
     }
 
     const p = await Product.findById(id)
-    if (!p) return res.status(404).json({ erro: 'Produto não encontrado' })
+    if (!p) {
+      return res.status(404).json({ erro: 'Produto não encontrado' })
+    }
 
     const b = req.body || {}
 
     if (b.nome != null) p.nome = String(b.nome).trim()
     if (b.marca != null) p.marca = String(b.marca).trim()
     if (b.categoria != null) p.categoria = String(b.categoria).trim()
-    if (b.subcategoria !== undefined) p.subcategoria = b.subcategoria ? String(b.subcategoria).trim() : undefined
+
+    if (b.subcategoria !== undefined) {
+      p.subcategoria = b.subcategoria
+        ? String(b.subcategoria).trim()
+        : undefined
+    }
 
     if (b.preco != null) {
       const preco = Number(b.preco)
@@ -103,17 +139,28 @@ produtosRouter.patch('/:id', requireAdminWhenConfigured, async (req, res) => {
 
     if (b.estoquePorTamanho != null) {
       const sizes = Array.isArray(p.tamanhos) ? p.tamanhos : []
+
       const legacy = b.estoque != null
         ? Math.max(0, Math.floor(Number(b.estoque)))
         : Number(p.estoque) || 0
 
-      p.estoquePorTamanho = sanitizeEstoquePorTamanho(b.estoquePorTamanho, sizes, legacy)
+      p.estoquePorTamanho = sanitizeEstoquePorTamanho(
+        b.estoquePorTamanho,
+        sizes,
+        legacy
+      )
+
       p.estoque = sumEstoquePorTamanho(p.estoquePorTamanho, sizes)
     } else if (b.estoque != null) {
       const sizes = Array.isArray(p.tamanhos) ? p.tamanhos : []
       const legacy = Math.max(0, Math.floor(Number(b.estoque)))
 
-      p.estoquePorTamanho = sanitizeEstoquePorTamanho(null, sizes, legacy)
+      p.estoquePorTamanho = sanitizeEstoquePorTamanho(
+        null,
+        sizes,
+        legacy
+      )
+
       p.estoque = sumEstoquePorTamanho(p.estoquePorTamanho, sizes)
     }
 
@@ -125,18 +172,18 @@ produtosRouter.patch('/:id', requireAdminWhenConfigured, async (req, res) => {
 
     res.json(toApiProduct(p))
   } catch (e) {
-    console.error(e)
+    console.error('[ERRO PATCH /produtos]:', e)
     res.status(500).json({ erro: 'Falha ao atualizar produto' })
   }
 })
 
-// DELETE
+// ✅ DELETE PRODUTO
 produtosRouter.delete('/:id', requireAdminWhenConfigured, async (req, res) => {
   try {
     const { id } = req.params
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ erro: 'ID de produto inválido' })
+      return res.status(400).json({ erro: 'ID inválido' })
     }
 
     const r = await Product.deleteOne({ _id: id })
@@ -147,7 +194,7 @@ produtosRouter.delete('/:id', requireAdminWhenConfigured, async (req, res) => {
 
     res.status(204).end()
   } catch (e) {
-    console.error(e)
+    console.error('[ERRO DELETE /produtos]:', e)
     res.status(500).json({ erro: 'Falha ao excluir produto' })
   }
 })
