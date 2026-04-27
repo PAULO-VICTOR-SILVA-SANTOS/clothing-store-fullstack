@@ -31,43 +31,6 @@ function generateOrderNumero() {
 }
 
 /**
- * Valida estoque, debita quantidade (por tamanho ou geral), recalcula total e persiste dentro da transação.
- * @param {import('mongoose').Document} produto
- * @param {number} quantidade
- * @param {string} tamanho
- * @param {import('mongoose').ClientSession} session
- */
-async function atualizarEstoqueProduto(produto, quantidade, tamanho, session) {
-  const map =
-    produto.estoquePorTamanho && typeof produto.estoquePorTamanho === 'object'
-      ? produto.estoquePorTamanho
-      : null
-  const hasPerSize = map && Object.keys(map).length > 0
-
-  if (hasPerSize) {
-    if (!tamanho) throw new Error(`Informe o tamanho no item: "${produto.nome}"`)
-    const cur = Math.max(0, Math.floor(Number(map[tamanho] ?? 0)))
-    if (cur < quantidade) {
-      throw new Error(
-        `Estoque insuficiente para "${produto.nome}" (${tamanho}). Disponível: ${cur}`
-      )
-    }
-    map[tamanho] = cur - quantidade
-    produto.estoquePorTamanho = map
-    produto.estoque = Object.values(map).reduce(
-      (a, v) => a + Math.max(0, Math.floor(Number(v) || 0)),
-      0
-    )
-  } else {
-    if (produto.estoque < quantidade) {
-      throw new Error(`Estoque insuficiente para "${produto.nome}". Disponível: ${produto.estoque}`)
-    }
-    produto.estoque = Math.max(0, produto.estoque - quantidade)
-  }
-  await produto.save({ session })
-}
-
-/**
  * POST /pedidos — valida estoque, recalcula total com preços do banco, baixa estoque e grava pedido (transação).
  * Corpo: { items: [{ productId, qty, tamanho? }], total, deliveryFee?, customer?, deliveryMode?, paymentMethod?, cashChangeFor? }
  * O campo `numero` do cliente é ignorado; o número oficial é gerado no servidor e devolvido na resposta.
@@ -93,10 +56,82 @@ pedidosRouter.post('/', postPedidoLimiter, async (req, res) => {
         throw new Error('ID de produto inválido no pedido')
       }
       if (qty < 1) throw new Error('Quantidade inválida')
-      const p = await Product.findById(pid).session(session)
-      if (!p) throw new Error(`Produto não encontrado: ${pid}`)
+      const meta = await Product.findById(pid).session(session)
+      if (!meta) throw new Error(`Produto não encontrado: ${pid}`)
 
-      await atualizarEstoqueProduto(p, qty, tamanho, session)
+      const map =
+        meta.estoquePorTamanho && typeof meta.estoquePorTamanho === 'object'
+          ? meta.estoquePorTamanho
+          : null
+      const hasPerSize = map && Object.keys(map).length > 0
+      if (hasPerSize && !tamanho) {
+        throw new Error(`Informe o tamanho no item: "${meta.nome}"`)
+      }
+
+      let p
+      if (hasPerSize) {
+        p = await Product.findOneAndUpdate(
+          { _id: pid, [`estoquePorTamanho.${tamanho}`]: { $gte: qty } },
+          [
+            {
+              $set: {
+                estoquePorTamanho: {
+                  $arrayToObject: {
+                    $map: {
+                      input: { $ifNull: [{ $objectToArray: '$estoquePorTamanho' }, []] },
+                      as: 'pair',
+                      in: {
+                        k: '$$pair.k',
+                        v: {
+                          $cond: [
+                            { $eq: ['$$pair.k', tamanho] },
+                            {
+                              $max: [
+                                0,
+                                {
+                                  $subtract: [
+                                    { $floor: { $toDouble: { $ifNull: ['$$pair.v', 0] } } },
+                                    qty
+                                  ]
+                                }
+                              ]
+                            },
+                            { $floor: { $toDouble: { $ifNull: ['$$pair.v', 0] } } }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              $set: {
+                estoque: {
+                  $sum: {
+                    $map: {
+                      input: { $objectToArray: '$estoquePorTamanho' },
+                      as: 'pair',
+                      in: {
+                        $max: [0, { $floor: { $toDouble: { $ifNull: ['$$pair.v', 0] } } }]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          { session, new: true, runValidators: true }
+        )
+      } else {
+        p = await Product.findOneAndUpdate(
+          { _id: pid, estoque: { $gte: qty } },
+          { $inc: { estoque: -qty } },
+          { session, new: true, runValidators: true }
+        )
+      }
+
+      if (!p) throw new Error('Estoque insuficiente')
 
       const precoUnit = roundMoney(Number(p.preco))
       const subtotal = roundMoney(qty * precoUnit)
