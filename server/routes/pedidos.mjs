@@ -31,6 +31,43 @@ function generateOrderNumero() {
 }
 
 /**
+ * Valida estoque, debita quantidade (por tamanho ou geral), recalcula total e persiste dentro da transação.
+ * @param {import('mongoose').Document} produto
+ * @param {number} quantidade
+ * @param {string} tamanho
+ * @param {import('mongoose').ClientSession} session
+ */
+async function atualizarEstoqueProduto(produto, quantidade, tamanho, session) {
+  const map =
+    produto.estoquePorTamanho && typeof produto.estoquePorTamanho === 'object'
+      ? produto.estoquePorTamanho
+      : null
+  const hasPerSize = map && Object.keys(map).length > 0
+
+  if (hasPerSize) {
+    if (!tamanho) throw new Error(`Informe o tamanho no item: "${produto.nome}"`)
+    const cur = Math.max(0, Math.floor(Number(map[tamanho] ?? 0)))
+    if (cur < quantidade) {
+      throw new Error(
+        `Estoque insuficiente para "${produto.nome}" (${tamanho}). Disponível: ${cur}`
+      )
+    }
+    map[tamanho] = cur - quantidade
+    produto.estoquePorTamanho = map
+    produto.estoque = Object.values(map).reduce(
+      (a, v) => a + Math.max(0, Math.floor(Number(v) || 0)),
+      0
+    )
+  } else {
+    if (produto.estoque < quantidade) {
+      throw new Error(`Estoque insuficiente para "${produto.nome}". Disponível: ${produto.estoque}`)
+    }
+    produto.estoque = Math.max(0, produto.estoque - quantidade)
+  }
+  await produto.save({ session })
+}
+
+/**
  * POST /pedidos — valida estoque, recalcula total com preços do banco, baixa estoque e grava pedido (transação).
  * Corpo: { items: [{ productId, qty, tamanho? }], total, deliveryFee?, customer?, deliveryMode?, paymentMethod?, cashChangeFor? }
  * O campo `numero` do cliente é ignorado; o número oficial é gerado no servidor e devolvido na resposta.
@@ -59,25 +96,7 @@ pedidosRouter.post('/', postPedidoLimiter, async (req, res) => {
       const p = await Product.findById(pid).session(session)
       if (!p) throw new Error(`Produto não encontrado: ${pid}`)
 
-      const map = p.estoquePorTamanho && typeof p.estoquePorTamanho === 'object' ? p.estoquePorTamanho : null
-      const hasPerSize = map && Object.keys(map).length > 0
-
-      if (hasPerSize) {
-        if (!tamanho) throw new Error(`Informe o tamanho no item: "${p.nome}"`)
-        const cur = Math.max(0, Math.floor(Number(map[tamanho] ?? 0)))
-        if (cur < qty) {
-          throw new Error(`Estoque insuficiente para "${p.nome}" (${tamanho}). Disponível: ${cur}`)
-        }
-        map[tamanho] = cur - qty
-        p.estoquePorTamanho = map
-        p.estoque = Object.values(map).reduce((a, v) => a + Math.max(0, Math.floor(Number(v) || 0)), 0)
-      } else {
-        if (p.estoque < qty) {
-          throw new Error(`Estoque insuficiente para "${p.nome}". Disponível: ${p.estoque}`)
-        }
-        p.estoque = Math.max(0, p.estoque - qty)
-      }
-      await p.save({ session })
+      await atualizarEstoqueProduto(p, qty, tamanho, session)
 
       const precoUnit = roundMoney(Number(p.preco))
       const subtotal = roundMoney(qty * precoUnit)
